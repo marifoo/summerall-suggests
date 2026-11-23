@@ -35,7 +35,7 @@ function summary(state = 'post') {
     return { header: { competitions: [{ status: { type: { state } } }] }, drives: { previous: [] } };
 }
 
-function app(fetchImpl, { storage = new Map(), storageBlocked = false, timers = {} } = {}) {
+function app(fetchImpl, { storage = new Map(), storageBlocked = false, timers = {}, now = Date.now } = {}) {
     // Run background work explicitly so foreground assertions never depend on timing.
     const backgroundTimers = new Map();
     const requestTimers = { setTimeout, clearTimeout, ...timers };
@@ -60,6 +60,7 @@ function app(fetchImpl, { storage = new Map(), storageBlocked = false, timers = 
     const calls = [];
     const context = vm.createContext({
         AbortController, TypeError,
+        Date: class extends Date { static now() { return now(); } },
         setTimeout(callback, delay) {
             if (delay !== 0) return requestTimers.setTimeout(callback, delay);
             const token = {};
@@ -442,3 +443,22 @@ test('refresh bypasses prefetched results and subsequent navigation uses the ref
     await page.run('loadGames(10, 2, 2026)');
     assert.equal(page.calls.length - before, 2);
 });
+
+for (const [state, lifetime] of [['pre', 60 * 60 * 1000], ['in', 5 * 60 * 1000]]) {
+    test(`warming a ${state} scoreboard in memory preserves its original expiration`, async () => {
+        let now = 0;
+        const page = app(() => jsonResponse(scoreboard({ events: [
+            game('finished', 'post', '40', '3'),
+            now < lifetime ? game('pending', state, '0', '0') : game('pending', 'post', '30', '3')
+        ] })), { now: () => now });
+        await page.run('fetchScoreboardForWeek(11, 2, 2026)');
+        now = lifetime - 60 * 1000;
+        await page.run('loadGames(11, 2, 2026)');
+        assert.equal(page.calls.length, 1);
+        assert.equal(page.element('spoiler-count').textContent, 1);
+        now = lifetime + 60 * 1000;
+        await page.run('loadGames(11, 2, 2026)');
+        assert.equal(page.calls.length, 2);
+        assert.equal(page.element('spoiler-count').textContent, 2);
+    });
+}

@@ -142,22 +142,26 @@
         // ============================================
         // CACHING UTILITIES
         // ============================================
-        function getCachedData(key) {
+        function getCachedEntry(key) {
             try {
                 const cached = localStorage.getItem(key);
                 if (!cached) return null;
 
                 const { data, timestamp, duration } = JSON.parse(cached);
-                const now = Date.now();
+                const expiresAt = duration === 'Infinity' ? Infinity : timestamp + duration;
 
-                if (duration === 'Infinity' || (now - timestamp) < duration) {
-                    return data;
+                if (Date.now() < expiresAt) {
+                    return { data, expiresAt };
                 }
                 localStorage.removeItem(key);
                 return null;
             } catch (e) {
                 return null;
             }
+        }
+
+        function getCachedData(key) {
+            return getCachedEntry(key)?.data ?? null;
         }
 
         function setCachedData(key, data, duration) {
@@ -397,7 +401,12 @@
                 weeks.delete(key);
                 weeks.set(key, entry);
                 entry.promise = (async () => {
+                    const startedAt = Date.now();
                     const data = scoreboard || await fetchScoreboardForWeek(week, seasonType, year, forceRefresh);
+                    // Hydrating memory must not renew an existing scoreboard's TTL.
+                    // Capture expiry before summaries load, which can take time.
+                    const expiresAt = Math.min(startedAt + getScoreboardCacheDuration(data),
+                        getCachedEntry(key)?.expiresAt ?? Infinity);
                     const summaries = new Map();
                     let complete = true;
                     for (const game of data.events.filter(isCompletedGame)) {
@@ -409,7 +418,7 @@
                             console.warn(`Failed to fetch summary for game ${game.id}:`, error);
                         }
                     }
-                    entry.expiresAt = Date.now() + getScoreboardCacheDuration(data);
+                    entry.expiresAt = expiresAt;
                     // Retry missing summaries on the next visit. Never let an older
                     // request remove the replacement created by a manual refresh.
                     if (!complete && weeks.get(key) === entry) weeks.delete(key);
