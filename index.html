@@ -207,6 +207,29 @@
             return `${CACHE_KEYS.SCOREBOARD}_${year}_${seasonType}_${week}`;
         }
 
+        // Only the newest request for a key may write its result. This also shares
+        // pending requests, while a manual refresh always starts a fresh request.
+        const fetchCachedESPN = (() => {
+            const pending = new Map();
+            return async function(key, load, getDuration, forceRefresh) {
+                if (!forceRefresh) {
+                    if (pending.has(key)) return pending.get(key).promise;
+                    const cached = getCachedData(key);
+                    if (cached) return cached;
+                }
+                const request = {};
+                pending.set(key, request);
+                request.promise = (async () => {
+                    const data = await load();
+                    if (pending.get(key) === request) setCachedData(key, data, getDuration(data));
+                    return data;
+                })().finally(() => {
+                    if (pending.get(key) === request) pending.delete(key);
+                });
+                return request.promise;
+            };
+        })();
+
         function isCompletedGame(game) {
             const status = game.status?.type || game.competitions?.[0]?.status?.type;
             return status?.state === 'post' && status.completed !== false;
@@ -240,22 +263,18 @@
                 throw new Error('Unable to determine the NFL week to load. Please refresh and try again.');
             }
             const cacheKey = getScoreboardCacheKey(week, seasonType, year);
-            const cached = !forceRefresh && getCachedData(cacheKey);
-            if (cached) {
-                return validateScoreboard(cached);
-            }
-
-            // The default endpoint can contain only today's games. Always request the whole week.
-            const url = `${SCOREBOARD_URL}?week=${week}&seasontype=${seasonType}&dates=${year}&limit=1000`;
-            const data = validateScoreboard(await fetchESPN(url));
-            if (data.season.year !== year || data.season.type !== seasonType ||
-                (data.week?.number != null && data.week.number !== week)) {
-                throw new Error('ESPN returned a different NFL week than requested. Please try again later.');
-            }
-            data.week = { ...data.week, number: week };
-            data.season = { ...data.season, type: seasonType, year };
-            setCachedData(cacheKey, data, getScoreboardCacheDuration(data));
-            return data;
+            return validateScoreboard(await fetchCachedESPN(cacheKey, async () => {
+                // The default endpoint can contain only today's games. Always request the whole week.
+                const url = `${SCOREBOARD_URL}?week=${week}&seasontype=${seasonType}&dates=${year}&limit=1000`;
+                const data = validateScoreboard(await fetchESPN(url));
+                if (data.season.year !== year || data.season.type !== seasonType ||
+                    (data.week?.number != null && data.week.number !== week)) {
+                    throw new Error('ESPN returned a different NFL week than requested. Please try again later.');
+                }
+                data.week = { ...data.week, number: week };
+                data.season = { ...data.season, type: seasonType, year };
+                return data;
+            }, getScoreboardCacheDuration, forceRefresh));
         }
 
         async function fetchScoreboard(forceRefresh = false) {
@@ -361,21 +380,13 @@
 
         async function fetchGameSummary(gameId, forceRefresh = false) {
             const cacheKey = CACHE_KEYS.SUMMARY_PREFIX + gameId;
-            const cached = !forceRefresh && getCachedData(cacheKey);
-            if (cached) {
-                return cached;
-            }
-
-            const data = await fetchESPN(SUMMARY_URL + encodeURIComponent(gameId));
-            if (!data?.header?.competitions?.length) {
-                throw new Error('ESPN returned an unexpected game summary response. Please try again later.');
-            }
-
-            const gameStatus = data.header?.competitions?.[0]?.status?.type?.state || 'pre';
-            const duration = getCacheDuration(gameStatus);
-
-            setCachedData(cacheKey, data, duration);
-            return data;
+            return fetchCachedESPN(cacheKey, async () => {
+                const data = await fetchESPN(SUMMARY_URL + encodeURIComponent(gameId));
+                if (!data?.header?.competitions?.length) {
+                    throw new Error('ESPN returned an unexpected game summary response. Please try again later.');
+                }
+                return data;
+            }, data => getCacheDuration(data.header.competitions[0].status?.type?.state || 'pre'), forceRefresh);
         }
 
         // Owns complete week data, request sharing, and speculative loading. It never

@@ -47,6 +47,7 @@ Games meeting the most criteria receive a star icon.
   - Scheduled games: 1 hour
   - Latest-week detection: 5 minutes
   - Manual refresh bypasses the selected week's scoreboard and game-summary caches
+  - Older in-flight responses cannot overwrite a newer refresh in persistent storage
 
 ## Deployment
 

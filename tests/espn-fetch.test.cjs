@@ -462,3 +462,35 @@ for (const [state, lifetime] of [['pre', 60 * 60 * 1000], ['in', 5 * 60 * 1000]]
         assert.equal(page.element('spoiler-count').textContent, 2);
     });
 }
+
+test('an older background scoreboard cannot overwrite refreshed scores after memory eviction', async () => {
+    const oldResponse = deferred();
+    let requestsForWeek10 = 0;
+    const page = app(url => {
+        const week = Number(new URL(url).searchParams.get('week'));
+        if (week === 10 && ++requestsForWeek10 === 1) return oldResponse.promise;
+        return jsonResponse(scoreboard({ week, events: [game(`week-${week}`, 'post', '50', '3')] }));
+    });
+    const oldLoad = page.run('weekResults.load(10, 2, 2026)');
+    await page.run('weekResults.load(10, 2, 2026, true)');
+    oldResponse.resolve(jsonResponse(scoreboard({ week: 10, events: [game('week-10', 'post', '40', '3')] })));
+    await oldLoad;
+    for (const week of [9, 8, 7]) await page.run(`weekResults.load(${week}, 2, 2026)`);
+    const revisited = await page.run('weekResults.load(10, 2, 2026)');
+    assert.equal(revisited.scoreboard.events[0].competitions[0].competitors[0].score, '50');
+    assert.equal(requestsForWeek10, 2);
+});
+
+test('an older summary response cannot replace a refreshed final summary in persistent storage', async () => {
+    const oldResponse = deferred();
+    let requests = 0;
+    const page = app(() => ++requests === 1 ? oldResponse.promise
+        : jsonResponse({ ...summary(), marker: 'fresh' }));
+    const oldLoad = page.run('fetchGameSummary("123")');
+    await page.run('fetchGameSummary("123", true)');
+    oldResponse.resolve(jsonResponse({ ...summary(), marker: 'old' }));
+    await oldLoad;
+    const cached = await page.run('fetchGameSummary("123")');
+    assert.equal(cached.marker, 'fresh');
+    assert.equal(requests, 2);
+});
