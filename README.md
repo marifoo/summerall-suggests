@@ -1,4 +1,4 @@
-# NFL Game Recommender
+# Summerall Suggests
 
 A spoiler-free NFL game recommendation website that helps you decide which games are worth watching.
 
