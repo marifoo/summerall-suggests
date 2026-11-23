@@ -9,6 +9,7 @@ A spoiler-free NFL game recommendation website that helps you decide which games
 - **Star Ratings**: Top games receive a star indicator based on how many criteria they meet
 - **Spoiler Zone**: Optional section to view full scores and quarter-by-quarter breakdowns
 - **Week Navigation**: Browse backwards and forwards through past weeks and seasons
+- **Background Loading**: After showing a week, loads the previous week's results, then the week before that, for faster navigation
 - **Automatic Week Detection**: Defaults to the most recent week with completed games
 - **Manual Refresh**: "Refresh data" button to fetch latest results on demand
 - **Caching**: Reduces API calls with intelligent localStorage caching
@@ -35,8 +36,10 @@ Games meeting the most criteria receive a star icon.
 - **Data Source**: ESPN public APIs
 - **API Requests**: Fetches scoreboards and game summaries directly from ESPN, with a 15-second timeout and HTTP/JSON error handling; no proxy or API key required
 - **Week Loading**: Uses ESPN's current season/week to request the full week's schedule, then steps back to the most recent week with completed games
+- **Background Loading**: Starts after the selected week renders. Loads the previous two weeks sequentially, including summaries needed for recommendations, using the same season transitions as navigation. Navigation shares any request already in flight and stops the old prefetch chain; background errors never replace the visible results.
 - **Caching Strategy**:
   - Each week cached separately for quick navigation
+  - Up to three complete weeks retained in memory, so preloaded results remain available when localStorage is full or blocked
   - Scoreboard (all games final): 2 hours
   - Game summaries (final): Cached indefinitely
   - In-progress games: 5 minutes
@@ -67,6 +70,8 @@ Run the fetch and rendering regression tests with Node.js 18 or newer (no depend
 ```sh
 node --test tests/espn-fetch.test.cjs
 ```
+
+See [AGENTS.md](AGENTS.md) for design principles, red-green bug-fix testing, and atomic commit requirements.
 
 ## Coverage
 

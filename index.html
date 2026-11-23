@@ -374,6 +374,91 @@
             return data;
         }
 
+        // Owns complete week data, request sharing, and speculative loading. It never
+        // changes the UI or navigation state. Keep three weeks in memory because full
+        // ESPN summaries can exceed localStorage's quota after a single week.
+        const weekResults = (() => {
+            const weeks = new Map();
+            let backgroundTimer = null;
+            let backgroundGeneration = 0;
+
+            async function loadWeek(week, seasonType, year, forceRefresh, scoreboard = null) {
+                const key = getScoreboardCacheKey(week, seasonType, year);
+                const cached = weeks.get(key);
+                if (!forceRefresh && cached && Date.now() < cached.expiresAt) {
+                    weeks.delete(key);
+                    weeks.set(key, cached);
+                    return cached.promise;
+                }
+
+                // Store the promise before awaiting data so navigation can join a
+                // background request. A refresh replaces the entry with fresh data.
+                const entry = { expiresAt: Infinity };
+                weeks.delete(key);
+                weeks.set(key, entry);
+                entry.promise = (async () => {
+                    const data = scoreboard || await fetchScoreboardForWeek(week, seasonType, year, forceRefresh);
+                    const summaries = new Map();
+                    let complete = true;
+                    for (const game of data.events.filter(isCompletedGame)) {
+                        if (!shouldFetchSummary(game)) continue;
+                        try {
+                            summaries.set(game.id, await fetchGameSummary(game.id, forceRefresh));
+                        } catch (error) {
+                            complete = false;
+                            console.warn(`Failed to fetch summary for game ${game.id}:`, error);
+                        }
+                    }
+                    entry.expiresAt = Date.now() + getScoreboardCacheDuration(data);
+                    // Retry missing summaries on the next visit. Never let an older
+                    // request remove the replacement created by a manual refresh.
+                    if (!complete && weeks.get(key) === entry) weeks.delete(key);
+                    for (const [oldKey, oldEntry] of weeks) {
+                        if (weeks.size <= 3) break;
+                        if (oldEntry.expiresAt !== Infinity) weeks.delete(oldKey);
+                    }
+                    return { scoreboard: data, summaries };
+                })().catch(error => {
+                    if (weeks.get(key) === entry) weeks.delete(key);
+                    throw error;
+                });
+                return entry.promise;
+            }
+
+            async function load(week, seasonType, year, forceRefresh = false) {
+                if (week !== null) return loadWeek(week, seasonType, year, forceRefresh);
+                const scoreboard = await fetchScoreboard(forceRefresh);
+                return loadWeek(scoreboard.week.number, scoreboard.season.type,
+                    scoreboard.season.year, forceRefresh, scoreboard);
+            }
+
+            function cancelPrefetch() {
+                backgroundGeneration++;
+                if (backgroundTimer !== null) clearTimeout(backgroundTimer);
+                backgroundTimer = null;
+            }
+
+            function prefetchPrevious(week, seasonType, year) {
+                cancelPrefetch();
+                const generation = backgroundGeneration;
+                // Yield until the selected week has rendered and controls are ready.
+                backgroundTimer = setTimeout(async () => {
+                    backgroundTimer = null;
+                    let period = { week, seasonType, year };
+                    for (let count = 0; count < 2 && generation === backgroundGeneration; count++) {
+                        period = getPreviousWeek(period.week, period.seasonType, period.year);
+                        try {
+                            await loadWeek(period.week, period.seasonType, period.year, false);
+                        } catch (error) {
+                            console.warn('Background week loading failed:', error);
+                        }
+                    }
+                }, 0);
+            }
+
+            return { load, prefetchPrevious, cancelPrefetch };
+        })();
+
         // ============================================
         // GAME ANALYSIS
         // ============================================
@@ -853,6 +938,7 @@
         // MAIN APPLICATION
         // ============================================
         async function loadGames(explicitWeek = null, explicitSeasonType = null, explicitYear = null, forceRefresh = false) {
+            weekResults.cancelPrefetch();
             const watchableContainer = document.getElementById('watchable-games');
             const spoilerContainer = document.getElementById('spoiler-games');
             const weekDisplay = document.getElementById('week-display');
@@ -877,15 +963,8 @@
             spoilerToggle.querySelector('.font-semibold').textContent = 'Show Spoilers';
 
             try {
-                let scoreboard;
-
-                if (explicitWeek !== null) {
-                    // Load specific week
-                    scoreboard = await fetchScoreboardForWeek(explicitWeek, explicitSeasonType, explicitYear, forceRefresh);
-                } else {
-                    // Auto-detect latest week with completed games
-                    scoreboard = await fetchScoreboard(forceRefresh);
-                }
+                const { scoreboard, summaries } = await weekResults.load(
+                    explicitWeek, explicitSeasonType, explicitYear, forceRefresh);
 
                 // Display week info
                 const week = scoreboard.week?.number || '';
@@ -941,6 +1020,7 @@
                     spoilerContainer.innerHTML = '';
                     document.getElementById('refresh-btn').classList.remove('hidden');
                     updateNavigationButtons();
+                    weekResults.prefetchPrevious(week, seasonType, seasonYear);
                     return;
                 }
 
@@ -948,15 +1028,7 @@
                 const gameAnalysis = [];
 
                 for (const game of completedGames) {
-                    let summary = null;
-                    if (shouldFetchSummary(game)) {
-                        try {
-                            summary = await fetchGameSummary(game.id, forceRefresh);
-                        } catch (e) {
-                            console.warn(`Failed to fetch summary for game ${game.id}:`, e);
-                        }
-                    }
-
+                    const summary = summaries.get(game.id) || null;
                     const evaluation = evaluateGame(game, summary);
 
                     // Debug logging
@@ -1028,6 +1100,7 @@
 
                 // Update navigation buttons
                 updateNavigationButtons();
+                weekResults.prefetchPrevious(week, seasonType, seasonYear);
 
             } catch (error) {
                 console.error('Failed to load games:', error);

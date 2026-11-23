@@ -36,6 +36,9 @@ function summary(state = 'post') {
 }
 
 function app(fetchImpl, { storage = new Map(), storageBlocked = false, timers = {} } = {}) {
+    // Run background work explicitly so foreground assertions never depend on timing.
+    const backgroundTimers = new Map();
+    const requestTimers = { setTimeout, clearTimeout, ...timers };
     const elements = new Map();
     function element(id) {
         if (!elements.has(id)) {
@@ -56,7 +59,16 @@ function app(fetchImpl, { storage = new Map(), storageBlocked = false, timers = 
     }
     const calls = [];
     const context = vm.createContext({
-        AbortController, TypeError, setTimeout, clearTimeout, ...timers,
+        AbortController, TypeError,
+        setTimeout(callback, delay) {
+            if (delay !== 0) return requestTimers.setTimeout(callback, delay);
+            const token = {};
+            backgroundTimers.set(token, callback);
+            return token;
+        },
+        clearTimeout(token) {
+            if (!backgroundTimers.delete(token)) requestTimers.clearTimeout(token);
+        },
         console: { log() {}, warn() {}, error() {} },
         fetch: async (url, options) => { calls.push({ url, options }); return fetchImpl(url, options); },
         localStorage: {
@@ -67,7 +79,15 @@ function app(fetchImpl, { storage = new Map(), storageBlocked = false, timers = 
         document: { getElementById: element, addEventListener() {} }
     });
     vm.runInContext(script, context, { filename: 'index.html' });
-    return { run: code => vm.runInContext(code, context), calls, storage, element };
+    return {
+        run: code => vm.runInContext(code, context), calls, storage, element,
+        async runBackground() {
+            for (const [token, callback] of [...backgroundTimers]) {
+                backgroundTimers.delete(token);
+                await callback();
+            }
+        }
+    };
 }
 
 test('requests the full ESPN week directly, caches it, and bypasses it on refresh', async () => {
@@ -302,4 +322,123 @@ test('failed loading exposes retry and restores navigation after a previous succ
     assert.match(page.element('watchable-games').innerHTML, /HTTP 500/);
     assert.equal(page.element('refresh-btn').disabled, false);
     assert.equal(page.element('prev-week-btn').disabled, false);
+});
+
+function weeklyResponse(url) {
+    if (url.includes('/summary?')) return jsonResponse(summary());
+    const week = Number(new URL(url).searchParams.get('week')) || 11;
+    return jsonResponse(scoreboard({ week, events: [game(`week-${week}`)] }));
+}
+
+function deferred() {
+    let resolve;
+    const promise = new Promise(done => { resolve = done; });
+    return { promise, resolve };
+}
+
+test('background loads the previous two weeks in order after rendering, including summaries', async () => {
+    const firstWeek = deferred();
+    const firstSummary = deferred();
+    const page = app(url => {
+        if (new URL(url).searchParams.get('week') === '10') return firstWeek.promise;
+        if (url.endsWith('summary?event=week-10')) return firstSummary.promise;
+        return weeklyResponse(url);
+    });
+    await page.run('loadGames()');
+    const foreground = page.calls.length;
+    const visible = page.element('watchable-games').innerHTML;
+    assert.equal(page.element('week-display').textContent, '2026 Week 11');
+    assert.equal(page.element('refresh-btn').disabled, false);
+
+    const background = page.runBackground();
+    assert.equal(page.calls.length, foreground + 1);
+    assert.equal(new URL(page.calls[foreground]?.url).searchParams.get('week'), '10');
+    firstWeek.resolve(weeklyResponse(page.calls[foreground].url));
+    // Wait until the first week's summary starts; week 9 must still be untouched.
+    await new Promise(setImmediate);
+    assert.equal(page.calls.at(-1).url, ESPN + 'summary?event=week-10');
+    assert.equal(page.calls.some(c => new URL(c.url).searchParams.get('week') === '9'), false);
+    firstSummary.resolve(jsonResponse(summary()));
+    await background;
+    assert.deepEqual(page.calls.slice(foreground).map(c => c.url), [
+        ESPN + 'scoreboard?week=10&seasontype=2&dates=2026&limit=1000',
+        ESPN + 'summary?event=week-10',
+        ESPN + 'scoreboard?week=9&seasontype=2&dates=2026&limit=1000',
+        ESPN + 'summary?event=week-9'
+    ]);
+    assert.equal(page.element('watchable-games').innerHTML, visible);
+    assert.equal(page.element('week-display').textContent, '2026 Week 11');
+    assert.equal(page.run('currentWeek'), 11);
+    assert.equal(page.run('latestWeek'), 11);
+    assert.equal(page.element('next-week-btn').disabled, true);
+    assert.equal(page.element('spoiler-content').classList.contains('hidden'), true);
+});
+
+test('prefetched recommendations need no new requests even when browser storage is unavailable', async () => {
+    const page = app(weeklyResponse, { storageBlocked: true });
+    await page.run('loadGames()');
+    await page.runBackground();
+    const before = page.calls.length;
+    await page.run('loadGames(10, 2, 2026)');
+    assert.equal(page.calls.length, before);
+    assert.equal(page.element('week-display').textContent, '2026 Week 10');
+    assert.match(page.element('watchable-games').innerHTML, /Home Team/);
+    await page.run('loadGames(9, 2, 2026)');
+    assert.equal(page.calls.length, before);
+    assert.equal(page.element('week-display').textContent, '2026 Week 9');
+});
+
+test('foreground navigation shares a pending background week and stops the old chain', async () => {
+    const pending = deferred();
+    const page = app(url => new URL(url).searchParams.get('week') === '10' ? pending.promise : weeklyResponse(url));
+    await page.run('loadGames()');
+    const background = page.runBackground();
+    assert.equal(new URL(page.calls.at(-1).url).searchParams.get('week'), '10');
+    const foreground = page.run('loadGames(10, 2, 2026)');
+    pending.resolve(weeklyResponse(ESPN + 'scoreboard?week=10'));
+    await Promise.all([background, foreground]);
+    assert.equal(page.calls.filter(c => new URL(c.url).searchParams.get('week') === '10').length, 1);
+    assert.equal(page.calls.filter(c => c.url.endsWith('summary?event=week-10')).length, 1);
+    assert.equal(page.calls.some(c => new URL(c.url).searchParams.get('week') === '9'), false);
+    assert.equal(page.element('week-display').textContent, '2026 Week 10');
+});
+
+test('a background error stays invisible and the next preceding week is still loaded', async () => {
+    const page = app(url => new URL(url).searchParams.get('week') === '10'
+        ? { ok: false, status: 500 } : weeklyResponse(url));
+    await page.run('loadGames()');
+    await page.runBackground();
+    assert.equal(page.element('week-display').textContent, '2026 Week 11');
+    assert.doesNotMatch(page.element('watchable-games').innerHTML, /HTTP 500|Failed to load/);
+    assert.equal(page.calls.some(c => c.url.endsWith('summary?event=week-9')), true);
+});
+
+test('background loading follows postseason and year boundaries', async () => {
+    const page = app(url => {
+        if (url.includes('/summary?')) return jsonResponse(summary());
+        const params = new URL(url).searchParams;
+        const week = Number(params.get('week'));
+        return jsonResponse(scoreboard({ week, type: Number(params.get('seasontype')),
+            year: Number(params.get('dates')), playoffWeeks: 5, events: [game(`week-${week}`)] }));
+    });
+    await page.run('loadGames(1, 2, 2026)');
+    await page.runBackground();
+    const weeks = page.calls.filter(c => c.url.includes('/scoreboard?')).map(c => {
+        const params = new URL(c.url).searchParams;
+        return [params.get('week'), params.get('seasontype'), params.get('dates')];
+    });
+    assert.deepEqual(weeks, [['1', '2', '2026'], ['5', '3', '2025'], ['4', '3', '2025']]);
+    assert.equal(page.element('week-display').textContent, '2026 Week 1');
+});
+
+test('refresh bypasses prefetched results and subsequent navigation uses the refreshed data', async () => {
+    const page = app(weeklyResponse, { storageBlocked: true });
+    await page.run('loadGames()');
+    await page.runBackground();
+    await page.run('loadGames(10, 2, 2026)');
+    const before = page.calls.length;
+    await page.run('loadGames(10, 2, 2026, true)');
+    assert.equal(page.calls.length - before, 2);
+    await page.run('loadGames(10, 2, 2026)');
+    assert.equal(page.calls.length - before, 2);
 });
