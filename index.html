@@ -711,13 +711,15 @@
                         const metrics = Watchability.extractMetrics(game, facts?.playMetrics,
                             facts ? 'fetched' : isCompletedGame(game) && shouldFetchSummary(game) ? 'fetch-failed' : 'not-requested');
                         const decisionKey = CACHE_KEYS.DECISION_PREFIX + game.id;
+                        // Decisions are cheap derived data. Always evaluate current
+                        // facts so damaged saved traces cannot affect recommendations.
+                        const evaluation = Watchability.evaluate(metrics);
+                        const decision = { metrics, evaluation };
                         const saved = getCachedData(decisionKey);
-                        const evaluation = saved && JSON.stringify(saved.metrics) === JSON.stringify(metrics) ?
-                            saved.evaluation : Watchability.evaluate(metrics);
                         // Only the current load may persist decisions. Clearing the cache
                         // or refreshing detaches older requests from this entry.
-                        if (weeks.get(key) === entry && (!saved || JSON.stringify(saved.metrics) !== JSON.stringify(metrics))) {
-                            setCachedData(decisionKey, { metrics, evaluation }, Math.max(1, expiresAt - Date.now()));
+                        if (weeks.get(key) === entry && JSON.stringify(saved) !== JSON.stringify(decision)) {
+                            setCachedData(decisionKey, decision, Math.max(1, expiresAt - Date.now()));
                         }
                         return { game, metrics, evaluation };
                     });

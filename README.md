@@ -90,7 +90,9 @@ The inline `compact-cache-module` in `index.html` owns the persistent envelope a
 actual scores, quarter scores, total records, dates, season calendar), extracted
 play facts, and individual metrics plus complete decision traces. Full ESPN
 summaries, drives, plays, boxscores, and unrelated scoreboard fields are never
-persisted. Ranking is derived from the selected week's evaluations.
+persisted. Ranking is derived from the selected week's evaluations. Week loading evaluates
+current facts rather than trusting saved decisions; damaged or inconsistent traces
+are repaired without refetching valid scores or play facts.
 
 Three versions have independent meanings:
 
