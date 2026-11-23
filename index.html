@@ -788,7 +788,11 @@
 
             async function load(week, seasonType, year, forceRefresh = false) {
                 if (week !== null) return loadWeek(week, seasonType, year, forceRefresh);
+                const epoch = fetchCachedESPN.epoch;
                 const scoreboard = await fetchScoreboard(forceRefresh);
+                // Even cached discovery yields a microtask. Clear may detach this
+                // continuation before it is allowed to start a new week request.
+                if (epoch !== fetchCachedESPN.epoch) throw new Error('Request superseded. Refresh data to try again.');
                 return loadWeek(scoreboard.week.number, scoreboard.season.type,
                     scoreboard.season.year, forceRefresh, scoreboard);
             }

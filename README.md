@@ -141,7 +141,8 @@ sequentially after rendering, stops its old chain on navigation, and keeps failu
 out of the visible results.
 
 **Clear cache** removes persistent and in-memory app entries and cancels queued
-prefetch. In-flight responses cannot repopulate the cleared cache. The visible
+prefetch. In-flight responses and pending cached-discovery continuations cannot repopulate
+the cleared cache or start new week requests. The visible
 results stay available; refresh or subsequent navigation fetches again. Clearing
 also works when localStorage is blocked.
 
