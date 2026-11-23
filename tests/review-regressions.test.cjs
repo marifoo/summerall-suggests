@@ -23,16 +23,16 @@ test('away-team comeback facts are symmetric and do not require a final win', ()
     const home = W.extractPlayMetrics({ drives: [{ plays: [scoringPlay(0, 15, 3), scoringPlay(15, 15, 3), scoringPlay(15, 23), scoringPlay(23, 23, 5), scoringPlay(23, 26, 5)] }] });
     const away = W.extractPlayMetrics({ drives: [{ plays: [scoringPlay(15, 0, 3), scoringPlay(15, 15, 3), scoringPlay(23, 15), scoringPlay(23, 23, 5), scoringPlay(26, 23, 5)] }] });
     assert.equal(home.erasedDeficitSecondHalf, 15);
-    assert.equal(home.erasedDeficitFourthQuarter, 8);
+    assert.equal(home.erasedDeficitFourthQuarter, null);
     assert.equal(away.erasedDeficitSecondHalf, 15);
-    assert.equal(away.erasedDeficitFourthQuarter, 8);
+    assert.equal(away.erasedDeficitFourthQuarter, null);
     assert.deepEqual(away.comebackFacts.away, home.comebackFacts.home);
     assert.equal(away.leadChanges, home.leadChanges);
 });
 
-test('five-point games keep three stars even below a higher weekly winner', () => {
+test('five-point games below a higher weekly winner have no stars', () => {
     const ranked = W.rankWeek([6, 5, 4].map(points => ({ metrics: { completed: true }, evaluation: { points, watchable: true } })));
-    assert.deepEqual(ranked.map(item => item.ranking.stars), [3, 3, 0]);
+    assert.deepEqual(ranked.map(item => item.ranking.stars), [3, 0, 0]);
     assert.deepEqual(ranked.map(item => item.ranking.tiedForFirst), [true, false, false]);
 });
 

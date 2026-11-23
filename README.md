@@ -19,55 +19,58 @@ A spoiler-free NFL game recommendation website that helps you decide which games
 
 ## How Games Are Recommended
 
-The implemented points policy is the compatibility baseline. Bonuses accumulate:
+[scoring-new.md](scoring-new.md) is the authoritative policy. Evaluate completed games only and sum these nine categories, awarding only the highest matching tier within each category:
 
-| Rule | Condition | Points |
-|------|-----------|--------|
-| Close / very close | Margin ≤ 8 / ≤ 2 | +1 each |
-| Overtime | Home linescores contain more than four periods, final score not tied | +1 |
-| Comeback | Observed deficit ≥ 15 in Q3 or later, then tied or led | +1 |
-| Strong comeback | Observed deficit ≥ 8 in Q4 or later, then tied or led | +1 |
-| Shootout / super shootout | Combined score ≥ 55 / ≥ 64, margin ≤ 10 | +1 each |
-| Late lead change | Last score change in Q4 switches directly between opposing leaders | +1 |
-| Lead changes | At least 5 / 7 / 10 changes (ties preserve the previous leader) | +1 each |
-| Winning records | Both pre-game wins minus losses ≥ 2 | +1 |
-| Losing records | Both pre-game wins minus losses ≤ -4 | -1 |
+| Category | Condition | Points |
+|---|---|---|
+| General scoring | Combined final score >28 | +1 |
+| Close finish | Final margin ≤8 / ≤2 | +1 / +2 |
+| Overtime | Reached OT, including a tied result | +1 |
+| Comeback | Erase 15+ in Q3/Q4 / erase 8+ in Q4 | +1 / +2 |
+| Late drama | Q4 tying/go-ahead score or trailing possession down 1–8 at ≤3:00 / Q4 tying/go-ahead score at ≤5:00 | +1 / +2 |
+| Lead changes | At least 3 / 5 verified leader switches | +1 / +2 |
+| Shootout | Final total ≥55 with final margin ≤10 or Q4 margin ≤7 / total ≥65 with margin ≤10 at Q3 end, in Q4, or final | +1 / +2 |
+| Team quality | Both pregame wins minus losses ≥2 | +1 |
+| Playoff significance | Both pregame wins minus losses ≥7 | +1 |
 
-Recommendations require **3+ points**. Every recommended game with **5+ points
-gets 3 stars**; otherwise games tied for the weekly maximum get **1 star**.
-Other recommended games have no stars. Sort order is descending points, preserving
-schedule order for ties. A low-scoring weekly leader is not recommended automatically.
+The maximum is 14 points; there is no losing-record penalty. General scoring
+stacks with shootout, and both record categories stack. Record differentials
+assume ESPN total records include the completed game, whose result is reversed;
+ties do not change wins minus losses. Playoff significance is record based.
 
-### Policy discrepancies (preserved, not silently corrected)
+Recommend at **3+ points**. Every tied leader among recommended games receives
+**3 stars**. Other recommendations receive **1 star at 6+**, or none at 3–5.
+A numerical weekly leader below 3 is not recommended or starred. Sort descending
+by points, preserving schedule order for ties.
 
-- The former README described an obsolete any-criterion policy (18+ scores,
-  seven-point margins, playoff bonuses, 14-point comebacks, and different shootout
-  conditions). The implementation uses the cumulative points policy above.
-- [nflscores.md](nflscores.md) requests recommendations at **2+**, **1 star at 5+**,
-  and **3 stars for the weekly maximum**. The implementation uses **3+**, **3 stars
-  at 5+**, and **1 star for a lower weekly maximum** instead.
-- Comebacks require subsequently tying or leading, not merely reducing the deficit;
-  Q4 comeback detection also includes overtime. The last Q4 score must switch
-  directly between leaders; a tie followed by a lead does not qualify.
-- Summary fetching is selective: postseason events (when event-level season metadata
-  exists), both teams scoring 15+, or margin ≤ 15. Skipped blowouts receive no
-  summary-dependent bonuses even if an unobserved comeback happened. Record
-  differentials assume ESPN's total record includes the completed game.
+Comebacks require recovering to a tie or lead in regulation; OT-only recoveries
+do not count, and later losing does not undo a recovery. Ties preserve the last
+leader for counting switches. Drama survives later scores and conversions.
+Q4 competitiveness includes the score carried into the quarter; final-total
+shootout thresholds need not have been reached at that competitive moment.
+Summaries are requested for **every completed game**, including blowouts, during
+selected-week loading and previous-week prefetch. Missing summaries still allow
+scoreboard-only awards. Unfinished games do not request summaries.
+
+Unavailable facts remain null. Positive witnesses in partial history can establish
+a tier; unsupported negatives and higher tiers remain unknown. The evaluator
+awards the highest supported tier and exposes unresolved alternatives in its trace.
+[nflscores.md](nflscores.md) records the historical policy.
 
 ## Developer mode (spoilers)
 
 Check **Developer mode — reveals spoilers for all games** above the results. It is
 off on every page load and never persisted. It shows every game in the selected
-week, including scheduled/live games and skipped blowouts, with actual scores,
+week, including scheduled/live games and blowouts, with actual scores,
 extracted metrics (including comeback facts, missing values, and summary availability),
-every rule's inputs/threshold/weight/applicability/result/points, total points,
+every category's inputs/thresholds/tier applicability/results/selected tier/points, total points,
 recommendation cutoff and decision, weekly rank, ties, and star explanations.
 Non-completed games are ineligible and unranked. An unavailable fact displays as
 `null`; it is distinct from a known zero or false value.
 
 This view consumes the same evaluations used to render normal recommendations;
 it does not request extra data or apply a second scoring policy. It also reveals
-when the selective-summary policy left facts unavailable. Turning it off removes
+when summary history left facts unavailable. Turning it off removes
 the inspection content from the DOM. Navigation clears old inspection results
 while loading; the checkbox stays enabled for the current page session.
 Normal recommendation cards continue to show only names, pre-game records, dates,
@@ -150,8 +153,8 @@ also works when localStorage is blocked.
 
 The inline `watchability-module` in `index.html` is a pure module with four boundaries: allowlist ESPN normalization,
 threshold-independent metric extraction, deterministic individual evaluation, and
-week-level ranking. `evaluate(metrics)` returns every rule's inputs, thresholds,
-weight, applicability, match result, awarded points (including zero and negative),
+week-level ranking. `evaluate(metrics)` returns every category's inputs, thresholds,
+tier applicability, match results, selected tier, and awarded points (including zero),
 total, and recommendation cutoff/decision. `rankWeek` adds rank and star explanations
 without mutating evaluations. All scoring thresholds and weights live together in
 that module. The inline `compact-cache-module` in `index.html` owns versioning, expiry, bounds, eviction, and
@@ -162,11 +165,27 @@ Unavailable scores, records, linescores, and play history are `null`, rather tha
 fabricated zeros or false values. Rules lacking required data award zero points and
 explain why they are inapplicable. Scheduled/live/cancelled games cannot qualify.
 Normalization falls back to competition status when event status omits its type.
-This explicitly handles absent facts; valid-data scoring follows the characterized
-implementation. Missing or incomplete score history cannot establish negative play facts. Missing
-periods disable period-dependent metrics while preserving lead counts established
-by a complete score sequence. Play facts are projected onto their own fields;
-completion, actual scores, and pre-game records always come from the scoreboard.
+This explicitly handles absent facts; scoring follows scoring-new.md. The ESPN adapter merges completed and current drive collections, deduplicates stable
+play IDs, and orders verified sequence numbers. Sanitized recorded ESPN plays in
+`tests/fixtures/espn-401671793.json` establish post-play score states, start-clock
+and live down/team possession metadata. Possession never follows merely from a
+drive's team or terminal end state. Small Pareto-frontier possession witnesses and
+score/clock interval evidence are persisted; raw plays and drives are not.
+
+The verified source contract does not guarantee that omitted drives or plays can
+be detected. Exact lead-change totals and unsupported negative temporal facts
+therefore remain unknown; independently proved leader switches provide a lower
+bound that still earns supported lead-change tiers. Quarter and final-score
+reconciliation detects contradictions but cannot prove completeness. Q4 score
+intervals retain conservative clock bounds, separate from an exact event clock.
+
+Halftime and cumulative end-of-Q3 scores anchor regulation comebacks and Q4
+competitiveness; overtime-only recoveries do not count. Each cached summary fact
+stores the scoreboard context (including completed final scores) used during
+extraction. Changed or newly available context triggers a fresh summary; concurrent
+requests with different contexts cannot share an inconsistent result. Scoreboard
+completion, scores, and pregame records cannot be overwritten by cached play facts.
+
 
 ## Deployment
 
@@ -199,7 +218,7 @@ node --test tests/*.test.cjs
 
 Tests load the canonical named script blocks from `index.html`; there are no
 duplicate scoring/cache implementations. The suite covers scoring boundaries and cumulative bonuses, comeback/tie semantics,
-negative and zero points, missing data, star ties, compact serialization, independent
+capped category and zero points, missing data, star ties, compact serialization, independent
 version changes, expiry preservation, eviction/quota/blocked storage, request sharing,
 refresh/clear races, sequential prefetch, and opt-in developer rendering. Browser
 smoke verification is also available with an installed Playwright package and

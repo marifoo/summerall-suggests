@@ -52,7 +52,7 @@ const server = http.createServer((req, res) => {
                 assert.doesNotMatch(await page.locator('#watchable-games').innerText(), /37|36|points|Final/);
                 await page.locator('#developer-toggle').check();
                 assert.equal(await page.locator('#developer-content [data-game-id]').count(), 3);
-                assert.equal(await page.locator('#developer-content [data-rule-id]').count(), 39);
+                assert.deepEqual(await page.locator('#developer-content [data-game-id]').first().locator('[data-rule-id]').evaluateAll(rows => rows.map(row => row.dataset.ruleId)), ['general-scoring', 'close-finish', 'overtime', 'comeback', 'late-drama', 'lead-changes', 'shootout', 'team-quality', 'playoff-significance']);
                 assert.equal(await page.locator('#developer-section').isVisible(), true);
                 if (!mode.blockCDN) {
                     await page.setViewportSize({ width: 390, height: 844 });

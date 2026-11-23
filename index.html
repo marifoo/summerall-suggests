@@ -96,9 +96,9 @@
 /* Pure ESPN normalization, fact extraction, scoring, and ranking. No I/O or UI. */
 (function (root) {
     'use strict';
-    const EXTRACTION_VERSION = 3;
-    const RULES_VERSION = 1;
-    const POLICY = Object.freeze({ recommendation: 3, threeStars: 5 });
+    const EXTRACTION_VERSION = 4;
+    const RULES_VERSION = 2;
+    const POLICY = Object.freeze({ recommendation: 3, oneStar: 6 });
     const number = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)) ? Number(value) : null;
 
     // This small rendering contract deliberately retains competition/team names;
@@ -135,57 +135,176 @@
         };
     }
 
-    function normalizePlays(summary) {
-        let drives = summary?.drives?.previous || summary?.drives;
-        if (drives && !Array.isArray(drives)) drives = Object.values(drives).filter(drive => drive && typeof drive === 'object');
-        if (!Array.isArray(drives)) return null;
-        const plays = drives.flatMap(drive => drive.plays || []);
-        if (!plays.length) return null;
-        return plays.map(play => ({ home: number(play.homeScore), away: number(play.awayScore), period: number(play.period?.number) }));
+    // ESPN scores describe post-play state. Sequence numbers establish ordering,
+    // not contiguity: even a reconciled summary may omit a scoreless drive.
+    const clockSeconds = clock => {
+        const match = /^(\d{1,2}):([0-5]\d)$/.exec(clock?.displayValue || '');
+        return match && Number(match[1]) <= 15 ? Number(match[1]) * 60 + Number(match[2]) : null;
+    };
+    function sourceContext(game) {
+        const teams = game.competitions?.[0]?.competitors || [];
+        const home = teams.find(t => t.homeAway === 'home'), away = teams.find(t => t.homeAway === 'away');
+        const through = n => {
+            const sum = team => Array.isArray(team?.linescores) && team.linescores.length >= n &&
+                team.linescores.slice(0,n).every(q => number(q.value) !== null) ?
+                team.linescores.slice(0,n).reduce((s,q) => s + number(q.value),0) : null;
+            const h = sum(home), a = sum(away);
+            return h === null || a === null ? null : { home:h, away:a };
+        };
+        const completed = game.status?.type?.state === 'post' && game.status.type.completed !== false;
+        return { halftime: through(2), endQ3: through(3), final: completed && number(home?.score) !== null && number(away?.score) !== null ?
+            { home:number(home.score), away:number(away.score) } : null };
     }
-
-    function extractPlayMetrics(summary) {
-        const plays = normalizePlays(summary);
-        const missing = !plays ? 'Play history unavailable' : plays.some(play => play.home === null || play.away === null) ? 'Play history incomplete' : null;
-        if (missing) return { leadChanges: null, lateLeadChange: null, lastQ4Score: null,
-            erasedDeficitSecondHalf: null, erasedDeficitFourthQuarter: null, comebackFacts: null, unavailable: missing };
-        const periodsKnown = plays.every(play => play.period !== null);
-        let previousLeader = null, leadChanges = 0, previousHome = 0, previousAway = 0, lastQ4Score = null;
-        const leader = (home, away) => home > away ? 'home' : away > home ? 'away' : 'tie';
-        const comebackFacts = Object.fromEntries(['home', 'away'].map(side => [side, {
-            secondHalfDeficit: 0, fourthQuarterDeficit: 0, erasedSecondHalfDeficit: 0, erasedFourthQuarterDeficit: 0
-        }]));
-        for (const play of plays) {
-            const currentLeader = leader(play.home, play.away);
-            if (currentLeader !== 'tie') {
-                if (previousLeader && previousLeader !== currentLeader) leadChanges++;
-                previousLeader = currentLeader;
-            }
-            if (play.period === 4 && (play.home !== previousHome || play.away !== previousAway)) {
-                lastQ4Score = { before: { home: previousHome, away: previousAway }, after: { home: play.home, away: play.away },
-                    previousLeader: leader(previousHome, previousAway), newLeader: currentLeader };
-            }
-            previousHome = play.home;
-            previousAway = play.away;
-            for (const side of ['home', 'away']) {
-                const deficit = side === 'home' ? play.away - play.home : play.home - play.away;
-                const facts = comebackFacts[side];
-                if (play.period >= 3) {
-                    facts.secondHalfDeficit = Math.max(facts.secondHalfDeficit, deficit);
-                    if (deficit <= 0) facts.erasedSecondHalfDeficit = facts.secondHalfDeficit;
-                }
-                if (play.period >= 4) {
-                    facts.fourthQuarterDeficit = Math.max(facts.fourthQuarterDeficit, deficit);
-                    if (deficit <= 0) facts.erasedFourthQuarterDeficit = facts.fourthQuarterDeficit;
-                }
-            }
+    function normalizePlays(summary) {
+        const source = summary?.drives;
+        if (!source) return [];
+        const drives = [];
+        const add = collection => {
+            if (!collection) return;
+            if (Array.isArray(collection)) drives.push(...collection);
+            else if (collection.plays) drives.push(collection);
+            else if (typeof collection === 'object') drives.push(...Object.values(collection).filter(d => d?.plays));
+        };
+        if (source.previous || source.current) { add(source.previous); add(source.current); }
+        else add(source);
+        const seen = new Set(), plays = [];
+        for (const drive of drives) for (const play of drive.plays || []) {
+            if (play.id && seen.has(String(play.id))) continue;
+            if (play.id) seen.add(String(play.id));
+            plays.push({ home:number(play.homeScore), away:number(play.awayScore), period:number(play.period?.number),
+                clock:clockSeconds(play.clock), seq:number(play.sequenceNumber), id:play.id,
+                scoring:play.scoringPlay === true, scoreless:play.scoringPlay === false, start:play.start, drive });
         }
-        return { leadChanges, lastQ4Score: periodsKnown ? lastQ4Score : null,
-            lateLeadChange: periodsKnown ? !!lastQ4Score && lastQ4Score.previousLeader !== 'tie' &&
-                lastQ4Score.newLeader !== 'tie' && lastQ4Score.previousLeader !== lastQ4Score.newLeader : null,
-            erasedDeficitSecondHalf: periodsKnown ? Math.max(...Object.values(comebackFacts).map(facts => facts.erasedSecondHalfDeficit)) : null,
-            erasedDeficitFourthQuarter: periodsKnown ? Math.max(...Object.values(comebackFacts).map(facts => facts.erasedFourthQuarterDeficit)) : null,
-            comebackFacts: periodsKnown ? comebackFacts : null, unavailable: periodsKnown ? null : 'Play periods unavailable' };
+        if (plays.length && plays.every(p => p.seq !== null)) plays.sort((a,b) => a.seq-b.seq);
+        else if (plays.length && plays.every(p => p.period !== null && p.clock !== null)) {
+            plays.sort((a,b) => a.period-b.period || b.clock-a.clock);
+        }
+        // If collections overlap without any defensible common ordering, their
+        // concatenation cannot prove chronological switches or timed recovery.
+        else if (drives.length > 1 && drives.some(d => (d.plays || []).some(p => p.sequenceNumber))) return [];
+
+        return plays;
+    }
+    function extractPlayMetrics(summary, context = { halftime:null, endQ3:null, final:null }) {
+        const plays = normalizePlays(summary);
+        const result = { leadChanges:null, leadChangesLowerBound:0, lateLeadChange:null, lastQ4Score:null,
+            erasedDeficitSecondHalf:null, erasedDeficitFourthQuarter:null, comebackFacts:null,
+            q4TyingOrGoAhead:null, q4ScoreClockUpperBound:null, dramaEvidence:null,
+            latePossessionChance:null, possessionEvidence:[], minQ4Margin:context.endQ3 ? Math.abs(context.endQ3.home-context.endQ3.away) : null,
+            endQ3Margin:context.endQ3 ? Math.abs(context.endQ3.home-context.endQ3.away) : null,
+            unavailable:'History coverage does not establish negative facts or an exact lead count' };
+        // Reconciliation detects contradictions, never establishes completeness.
+        let observed = null;
+        for (const p of plays) {
+            if (p.home === null || p.away === null) continue;
+            if ((observed && (p.home < observed.home || p.away < observed.away)) ||
+                (context.final && (p.home > context.final.home || p.away > context.final.away)) ||
+                (p.period >= 3 && context.halftime && (p.home < context.halftime.home || p.away < context.halftime.away)) ||
+                (p.period <= 2 && context.halftime && (p.home > context.halftime.home || p.away > context.halftime.away)) ||
+                (p.period === 3 && context.endQ3 && (p.home > context.endQ3.home || p.away > context.endQ3.away)) ||
+                (p.period >= 4 && context.endQ3 && (p.home < context.endQ3.home || p.away < context.endQ3.away))) {
+                result.unavailable = 'Score history contradicts scoreboard context';
+                return result;
+            }
+            observed = p;
+        }
+        const leader = p => p.home > p.away ? 'home' : p.away > p.home ? 'away' : 'tie';
+        const valid = p => p && p.home !== null && p.away !== null;
+        let prior = null, priorLeader = null;
+        const maxima = { home:{ secondHalfDeficit:0, fourthQuarterDeficit:0, erasedSecondHalfDeficit:0, erasedFourthQuarterDeficit:0 },
+            away:{ secondHalfDeficit:0, fourthQuarterDeficit:0, erasedSecondHalfDeficit:0, erasedFourthQuarterDeficit:0 } };
+        const teams = summary?.header?.competitions?.[0]?.competitors || [];
+        const sideFor = id => teams.find(t => String(t.id || t.team?.id) === String(id))?.homeAway;
+        for (const play of plays) {
+            if (!valid(play)) { prior = null; priorLeader = null; continue; }
+            const currentLeader = leader(play);
+            // Monotone observations prove at least one switch even across a gap.
+            if (priorLeader && currentLeader !== 'tie' && priorLeader !== currentLeader) result.leadChangesLowerBound++;
+            if (currentLeader !== 'tie') priorLeader = currentLeader;
+            if (play.period === 4) result.minQ4Margin = Math.min(result.minQ4Margin ?? Infinity, Math.abs(play.home-play.away));
+            const anchor = play.period === 3 ? context.halftime : play.period === 4 ? context.endQ3 : null;
+            const before = prior && prior.period === play.period ? prior : anchor;
+            const sameHalf = prior && [3,4].includes(prior.period) && [3,4].includes(play.period);
+            for (const side of ['home','away']) {
+                const deficit = p => side === 'home' ? p.away-p.home : p.home-p.away;
+                const f = maxima[side];
+                if ([3,4].includes(play.period)) {
+                    if (before) f.secondHalfDeficit = Math.max(f.secondHalfDeficit,deficit(before));
+                    if (sameHalf) f.secondHalfDeficit = Math.max(f.secondHalfDeficit,deficit(prior));
+                    f.secondHalfDeficit = Math.max(f.secondHalfDeficit,deficit(play));
+                    if (deficit(play) <= 0 && (before || sameHalf)) f.erasedSecondHalfDeficit = Math.max(f.erasedSecondHalfDeficit,f.secondHalfDeficit);
+                }
+                if (play.period === 4) {
+                    if (!prior || prior.period !== 4) f.fourthQuarterDeficit = anchor ? Math.max(0,deficit(anchor)) : 0;
+                    if (before) f.fourthQuarterDeficit = Math.max(f.fourthQuarterDeficit,deficit(before));
+                    f.fourthQuarterDeficit = Math.max(f.fourthQuarterDeficit,deficit(play));
+                    if (deficit(play) <= 0 && before) f.erasedFourthQuarterDeficit = Math.max(f.erasedFourthQuarterDeficit,f.fourthQuarterDeficit);
+                }
+            }
+            if (play.period === 4 && before && (play.home !== before.home || play.away !== before.away)) {
+                const qualifying = (before.home < before.away && play.home >= play.away) ||
+                    (before.away < before.home && play.away >= play.home) || (before.home === before.away && play.home !== play.away);
+                // Across a same-period gap, score endpoints prove the transition
+                // occurred in this period, but only bound its clock conservatively.
+                if (qualifying) {
+                    result.q4TyingOrGoAhead = true;
+                    const upper = prior?.period === 4 ? prior.clock : 900;
+                    const exact = null; // A scoring flag alone does not establish its pre-play score.
+                    const bound = exact ?? upper;
+                    if (bound !== null && play.clock !== null && bound >= play.clock &&
+                        (result.q4ScoreClockUpperBound === null || bound < result.q4ScoreClockUpperBound)) {
+                        result.q4ScoreClockUpperBound = bound;
+                        result.dramaEvidence = { before:{home:before.home,away:before.away}, after:{home:play.home,away:play.away},
+                            period:4, exactClock:exact, clockRange:[play.clock,bound] };
+                    }
+                }
+                result.lastQ4Score = {before:{home:before.home,away:before.away},after:{home:play.home,away:play.away},previousLeader:leader(before),newLeader:currentLeader};
+            }
+            // Fixture play.clock is the snap/start clock (the accompanying
+            // start.down/team describes that live possession). An explicitly
+            // scoreless play has the same pre/post scores, even across a gap.
+            if (play.period === 4 && play.scoreless && play.clock !== null &&
+                Number.isInteger(play.start?.down) && play.start.down >= 1 && play.start.down <= 4) {
+                const side = sideFor(play.start.team?.id);
+                const deficit = side === 'home' ? play.away-play.home : side === 'away' ? play.home-play.away : null;
+                if (deficit !== null && deficit > 0) {
+                    const witness = {deficit, startClock:play.clock, endClock:play.clock, endInclusive:true, period:4};
+                    result.possessionEvidence.push(witness);
+                    result.possessionEvidence = result.possessionEvidence.filter((e,i,all) => !all.some((other,j) => j !== i &&
+                        other.deficit <= e.deficit && (other.endClock < e.endClock ||
+                        (other.endClock === e.endClock && (other.endInclusive || !e.endInclusive))) &&
+                        (other.deficit < e.deficit || other.endClock < e.endClock ||
+                        (other.endInclusive && !e.endInclusive) || (other.endInclusive === e.endInclusive && j < i))));
+                }
+            }
+            // Scoreless, same-owner observations inside one drive bound a live
+            // possession interval. Its end is exclusive (a turnover may end it).
+            if (play.period === 4 && prior?.period === 4 && prior.drive === play.drive &&
+                play.clock !== null && prior.clock !== null && play.clock < prior.clock &&
+                play.home === prior.home && play.away === prior.away &&
+                prior.start?.team?.id === play.start?.team?.id &&
+                [prior,play].every(p => Number.isInteger(p.start?.down) && p.start.down >= 1 && p.start.down <= 4)) {
+                const side = sideFor(play.start.team?.id);
+                const deficit = side === 'home' ? play.away-play.home : side === 'away' ? play.home-play.away : null;
+                if (deficit !== null && deficit > 0) {
+                    const witness = {deficit, startClock:prior.clock, endClock:play.clock, endInclusive:false, period:4};
+                    result.possessionEvidence.push(witness);
+                    result.possessionEvidence = result.possessionEvidence.filter((e,i,all) => !all.some((other,j) => j !== i &&
+                        other.deficit <= e.deficit && (other.endClock < e.endClock ||
+                        (other.endClock === e.endClock && (other.endInclusive || !e.endInclusive))) &&
+                        (other.deficit < e.deficit || other.endClock < e.endClock ||
+                        (other.endInclusive && !e.endInclusive) || (other.endInclusive === e.endInclusive && j < i))));
+                }
+            }
+            prior = play;
+        }
+        for (const [field,key] of [['erasedDeficitSecondHalf','erasedSecondHalfDeficit'],['erasedDeficitFourthQuarter','erasedFourthQuarterDeficit']]) {
+            const earned = Math.max(maxima.home[key],maxima.away[key]);
+            if (earned > 0) result[field] = earned;
+        }
+        if (plays.length) result.comebackFacts = maxima;
+        if (result.lastQ4Score) result.lateLeadChange = result.lastQ4Score.previousLeader !== 'tie' && result.lastQ4Score.newLeader !== 'tie' && result.lastQ4Score.previousLeader !== result.lastQ4Score.newLeader;
+        return result;
     }
 
     // Cached facts cross the same domain boundary as freshly extracted facts.
@@ -203,6 +322,19 @@
             const last = value.lastQ4Score;
             if (!last || !['home', 'away', 'tie'].includes(last.previousLeader) || !['home', 'away', 'tie'].includes(last.newLeader) ||
                 !['before', 'after'].every(when => ['home', 'away'].every(side => count(last[when]?.[side])))) return false;
+        }
+        if (!Array.isArray(value.possessionEvidence) || !value.possessionEvidence.every(e =>
+            e && count(e.deficit) && e.deficit > 0 && e.period === 4 && typeof e.endInclusive === 'boolean' &&
+            count(e.startClock) && count(e.endClock) && e.startClock <= 900 && (e.endInclusive ? e.startClock === e.endClock : e.startClock > e.endClock))) return false;
+        if (!count(value.leadChangesLowerBound) || !['q4ScoreClockUpperBound','minQ4Margin','endQ3Margin'].every(key => nullableCount(value[key])) ||
+            !['q4TyingOrGoAhead','latePossessionChance'].every(key => value[key] === null || typeof value[key] === 'boolean')) return false;
+        if (value.q4ScoreClockUpperBound !== null && value.q4ScoreClockUpperBound > 900) return false;
+        if (value.dramaEvidence !== null) {
+            const e = value.dramaEvidence;
+            if (!e || e.period !== 4 || !nullableCount(e.exactClock) ||
+                !Array.isArray(e.clockRange) || e.clockRange.length !== 2 || !e.clockRange.every(count) ||
+                e.clockRange[0] > e.clockRange[1] || e.clockRange[1] > 900 ||
+                !['before','after'].every(k => ['home','away'].every(side => count(e[k]?.[side])))) return false;
         }
         return true;
     }
@@ -239,6 +371,14 @@
             // Play history owns only these facts. Extra cached fields cannot
             // replace scoreboard-owned completion, scores, or pre-game records.
             leadChanges: playMetrics?.leadChanges ?? null,
+            leadChangesLowerBound: playMetrics?.leadChangesLowerBound ?? null,
+            possessionEvidence: playMetrics?.possessionEvidence ?? [],
+            q4TyingOrGoAhead: playMetrics?.q4TyingOrGoAhead ?? null,
+            q4ScoreClockUpperBound: playMetrics?.q4ScoreClockUpperBound ?? null,
+            dramaEvidence: playMetrics?.dramaEvidence ?? null,
+            minQ4Margin: playMetrics?.minQ4Margin ?? (sourceContext(game).endQ3 ? Math.abs(sourceContext(game).endQ3.home-sourceContext(game).endQ3.away) : null),
+            endQ3Margin: sourceContext(game).endQ3 ? Math.abs(sourceContext(game).endQ3.home-sourceContext(game).endQ3.away) : playMetrics?.endQ3Margin ?? null,
+
             lateLeadChange: playMetrics?.lateLeadChange ?? null,
             lastQ4Score: playMetrics?.lastQ4Score ?? null,
             erasedDeficitSecondHalf: playMetrics?.erasedDeficitSecondHalf ?? null,
@@ -247,53 +387,71 @@
             unavailable: playMetrics?.unavailable ?? null, summaryAvailability };
     }
 
-    // Each rule owns its named inputs, numerical thresholds, and weight. Adding or
-    // changing a scoring rule does not require ESPN payloads or renderer changes.
-    const RULES = [
-        ['close', ['finalMargin'], { maxMargin: 8 }, 1, (m, t) => m.finalMargin <= t.maxMargin],
-        ['very-close', ['finalMargin'], { maxMargin: 2 }, 1, (m, t) => m.finalMargin <= t.maxMargin],
-        ['overtime', ['overtime', 'finalMargin'], { overtime: true, minMargin: 1 }, 1, (m, t) => m.overtime === t.overtime && m.finalMargin >= t.minMargin],
-        ['comeback', ['erasedDeficitSecondHalf'], { minErasedDeficit: 15, earliestPeriod: 3 }, 1, (m, t) => m.erasedDeficitSecondHalf >= t.minErasedDeficit],
-        ['strong-comeback', ['erasedDeficitFourthQuarter'], { minErasedDeficit: 8, earliestPeriod: 4 }, 1, (m, t) => m.erasedDeficitFourthQuarter >= t.minErasedDeficit],
-        ['shootout', ['combinedScore', 'finalMargin'], { minCombined: 55, maxMargin: 10 }, 1, (m, t) => m.combinedScore >= t.minCombined && m.finalMargin <= t.maxMargin],
-        ['super-shootout', ['combinedScore', 'finalMargin'], { minCombined: 64, maxMargin: 10 }, 1, (m, t) => m.combinedScore >= t.minCombined && m.finalMargin <= t.maxMargin],
-        ['late-lead-change', ['lateLeadChange'], { directSwitchOnLastQ4Score: true }, 1, m => m.lateLeadChange],
-        ['lead-changes', ['leadChanges'], { minChanges: 5 }, 1, (m, t) => m.leadChanges >= t.minChanges],
-        ['many-lead-changes', ['leadChanges'], { minChanges: 7 }, 1, (m, t) => m.leadChanges >= t.minChanges],
-        ['record-lead-changes', ['leadChanges'], { minChanges: 10 }, 1, (m, t) => m.leadChanges >= t.minChanges],
-        ['playoff-teams', ['homeRecordDifferential', 'awayRecordDifferential'], { minDifferential: 2 }, 1, (m, t) => m.homeRecordDifferential >= t.minDifferential && m.awayRecordDifferential >= t.minDifferential],
-        ['losing-teams', ['homeRecordDifferential', 'awayRecordDifferential'], { maxDifferential: -4 }, -1, (m, t) => m.homeRecordDifferential <= t.maxDifferential && m.awayRecordDifferential <= t.maxDifferential]
+    // Three-valued predicates preserve uncertainty per tier and alternative.
+    const atLeast = (value, limit) => value == null ? null : value >= limit;
+    const atMost = (value, limit) => value == null ? null : value <= limit;
+    // Observed history establishes bounds, not negatives about omitted history.
+    const provedAtLeast = (value, limit) => value != null && value >= limit ? true : null;
+    const provedAtMost = (value, limit) => value != null && value <= limit ? true : null;
+    const any = (...values) => values.includes(true) ? true : values.every(v => v === false) ? false : null;
+    const all = (...values) => values.includes(false) ? false : values.every(v => v === true) ? true : null;
+    const tier = (id, points, threshold, test) => ({ id, points, threshold, test });
+    function possessionMatch(metrics, threshold) {
+        return metrics.possessionEvidence?.some(e => e.period === threshold.period &&
+            e.deficit >= threshold.possessionDeficit[0] && e.deficit <= threshold.possessionDeficit[1] &&
+            (e.endClock < threshold.maxPossessionClock ||
+                (e.endClock === threshold.maxPossessionClock && e.endInclusive))) ? true : null;
+    }
+    const CATEGORIES = [
+        ['general-scoring', ['combinedScore'], [tier('29-plus', 1, { minCombined: 29 }, m => atLeast(m.combinedScore, 29))]],
+        ['close-finish', ['finalMargin'], [tier('within-eight', 1, { maxMargin: 8 }, m => atMost(m.finalMargin, 8)), tier('within-two', 2, { maxMargin: 2 }, m => atMost(m.finalMargin, 2))]],
+        ['overtime', ['overtime'], [tier('reached-ot', 1, { overtime: true }, m => m.overtime ?? null)]],
+        ['comeback', ['erasedDeficitSecondHalf', 'erasedDeficitFourthQuarter'], [tier('second-half', 1, { minDeficit: 15, periods: [3, 4] }, m => provedAtLeast(m.erasedDeficitSecondHalf, 15)), tier('fourth-quarter', 2, { minDeficit: 8, period: 4 }, m => provedAtLeast(m.erasedDeficitFourthQuarter, 8))]],
+        ['late-drama', ['q4TyingOrGoAhead', 'q4ScoreClockUpperBound', 'possessionEvidence'], [tier('q4-drama', 1, { period: 4, maxPossessionClock: 180, possessionDeficit: [1, 8] }, (m, t) => any(m.q4TyingOrGoAhead ?? null, possessionMatch(m, t))), tier('last-five', 2, { period: 4, maxScoreClock: 300 }, m => all(m.q4TyingOrGoAhead ?? null, provedAtMost(m.q4ScoreClockUpperBound, 300)))]],
+        ['lead-changes', ['leadChanges', 'leadChangesLowerBound'], [3, 5].map((n, i) => tier(`${n}-plus`, i + 1, { minChanges: n }, m => m.leadChanges != null ? atLeast(m.leadChanges, n) : atLeast(m.leadChangesLowerBound, n) === true ? true : null))],
+        ['shootout', ['combinedScore', 'finalMargin', 'minQ4Margin', 'endQ3Margin'], [tier('55-competitive', 1, { minCombined: 55, maxFinalMargin: 10, maxQ4Margin: 7 }, m => all(atLeast(m.combinedScore, 55), any(atMost(m.finalMargin, 10), provedAtMost(m.minQ4Margin, 7)))), tier('65-competitive', 2, { minCombined: 65, maxMargin: 10 }, m => all(atLeast(m.combinedScore, 65), any(atMost(m.finalMargin, 10), provedAtMost(m.minQ4Margin, 10), atMost(m.endQ3Margin, 10))))]],
+        ['team-quality', ['homeRecordDifferential', 'awayRecordDifferential'], [tier('both-plus-two', 1, { minDifferential: 2 }, m => all(atLeast(m.homeRecordDifferential, 2), atLeast(m.awayRecordDifferential, 2)))]],
+        ['playoff-significance', ['homeRecordDifferential', 'awayRecordDifferential'], [tier('both-plus-seven', 1, { minDifferential: 7 }, m => all(atLeast(m.homeRecordDifferential, 7), atLeast(m.awayRecordDifferential, 7)))]]
     ];
     function evaluate(metrics) {
-        const rules = RULES.map(([id, keys, threshold, weight, test]) => {
+        const rules = CATEGORIES.map(([id, keys, definitions]) => {
             const inputs = Object.fromEntries(keys.map(key => [key, metrics[key] ?? null]));
-            const applicable = metrics.completed && Object.values(inputs).every(value => value !== null);
-            const matched = applicable ? !!test(metrics, threshold) : null;
-            return { id, inputs, threshold: { ...threshold }, weight, applicable, matched,
-                points: matched ? weight : 0, explanation: !metrics.completed ? 'Game not completed' : !applicable ? 'Required data unavailable' : matched ? 'Condition met' : 'Condition not met' };
+            const tiers = definitions.map(({ id, points, threshold, test }) => {
+                const matched = metrics.completed ? test(metrics, threshold) : null;
+                return { id, points, threshold, applicable: matched !== null, matched };
+            });
+            const selected = tiers.filter(t => t.matched === true).at(-1);
+            const unresolved = tiers.some(t => t.matched === null && t.points > (selected?.points ?? 0));
+            const matched = selected ? true : tiers.every(t => t.matched === false) ? false : null;
+            return { id, inputs, threshold: Object.fromEntries(tiers.map(t => [t.id, t.threshold])),
+                weight: definitions.at(-1).points, applicable: tiers.some(t => t.applicable), matched,
+                tiers, selectedTier: selected?.id ?? null, points: selected?.points ?? 0,
+                explanation: !metrics.completed ? 'Game not completed' : selected ? `Selected ${selected.id}; category capped at ${selected.points}${unresolved ? '; higher tier unresolved' : ''}` : matched === null ? 'Required data unavailable' : 'Condition not met' };
         });
         const points = rules.reduce((total, rule) => total + rule.points, 0);
-        const watchable = metrics.completed && points >= POLICY.recommendation;
-        return { rulesVersion: RULES_VERSION, rules, points, watchable, reasons: rules.filter(rule => rule.points !== 0).map(rule => rule.id),
-            recommendation: { eligible: metrics.completed, threshold: POLICY.recommendation, points, decision: watchable } };
+        const watchable = !!metrics.completed && points >= POLICY.recommendation;
+        return { rulesVersion: RULES_VERSION, rules, points, watchable, reasons: rules.filter(rule => rule.points > 0).map(rule => rule.id),
+            recommendation: { eligible: !!metrics.completed, threshold: POLICY.recommendation, points, decision: watchable } };
     }
 
     function rankWeek(games) {
         const completed = games.filter(item => item.metrics.completed);
+        const recommended = completed.filter(item => item.evaluation.watchable);
         const maximum = completed.length ? Math.max(...completed.map(item => item.evaluation.points)) : null;
+        const recommendedMaximum = recommended.length ? Math.max(...recommended.map(item => item.evaluation.points)) : null;
         return games.map(item => {
             const { points, watchable } = item.evaluation;
-            const tiedForFirst = item.metrics.completed && points === maximum;
-            const stars = !watchable ? 0 : points >= POLICY.threeStars ? 3 : tiedForFirst ? 1 : 0;
+            const tiedForFirst = !!item.metrics.completed && points === maximum;
+            const winner = !!item.metrics.completed && watchable && points === recommendedMaximum;
+            const stars = !item.metrics.completed || !watchable ? 0 : winner ? 3 : points >= POLICY.oneStar ? 1 : 0;
             return { ...item, ranking: {
                 rank: item.metrics.completed ? 1 + completed.filter(other => other.evaluation.points > points).length : null,
                 weeklyMaximum: maximum, tiedForFirst, stars,
-                explanation: !watchable ? 'Not recommended; no stars' : points >= POLICY.threeStars ? `At least ${POLICY.threeStars} points; 3 stars` :
-                    tiedForFirst ? 'Tied for weekly maximum below 5 points; 1 star' : 'Recommended below 5 points and below weekly maximum; no stars'
+                explanation: !watchable || !item.metrics.completed ? 'Not recommended; no stars' : winner ? 'Tied for highest recommended total; 3 stars' : points >= POLICY.oneStar ? 'At least 6 points; 1 star' : 'Recommended with 3–5 points below weekly maximum; no stars'
             } };
         }).sort((a, b) => Number(b.metrics.completed) - Number(a.metrics.completed) || b.evaluation.points - a.evaluation.points);
     }
-    const api = { EXTRACTION_VERSION, RULES_VERSION, normalizeGame, normalizeScoreboard, extractPlayMetrics, isPlayMetrics, extractMetrics, evaluate, rankWeek, preGameRecord };
+    const api = { EXTRACTION_VERSION, RULES_VERSION, normalizeGame, normalizeScoreboard, sourceContext, extractPlayMetrics, isPlayMetrics, extractMetrics, evaluate, rankWeek, preGameRecord };
     if (typeof module !== 'undefined' && module.exports) module.exports = api;
     else root.Watchability = api;
 })(globalThis);
@@ -493,13 +651,13 @@
         const fetchCachedESPN = (() => {
             const pending = new Map();
             let epoch = 0;
-            const fetch = async function(key, load, getDuration, forceRefresh, validate = data => data) {
+            const fetch = async function(key, load, getDuration, forceRefresh, validate = data => data, identity = null) {
                 if (!forceRefresh) {
-                    if (pending.has(key)) return pending.get(key).promise;
+                    if (pending.has(key) && pending.get(key).identity === identity) return pending.get(key).promise;
                     const cached = getValidCachedData(key, validate);
                     if (cached !== null) return cached;
                 }
-                const request = {};
+                const request = { identity };
                 pending.set(key, request);
                 request.promise = (async () => {
                     const data = validate(await load());
@@ -698,16 +856,24 @@
             return data;
         }
 
-        async function fetchGameFacts(gameId, forceRefresh = false) {
+        async function fetchGameFacts(game, forceRefresh = false) {
+            const gameId = game.id;
+            const context = Watchability.sourceContext(game);
+            const identity = JSON.stringify(context);
+            const validate = data => {
+                validateGameFacts(data);
+                if (JSON.stringify(data.sourceContext) !== identity) throw new Error('Game fact context changed');
+                return data;
+            };
             const cacheKey = CACHE_KEYS.SUMMARY_PREFIX + gameId;
             return fetchCachedESPN(cacheKey, async () => {
                 const data = await fetchESPN(SUMMARY_URL + encodeURIComponent(gameId));
                 if (!data?.header?.competitions?.length) {
                     throw new Error('ESPN returned an unexpected game summary response. Please try again later.');
                 }
-                return { playMetrics: Watchability.extractPlayMetrics(data),
+                return { playMetrics: Watchability.extractPlayMetrics(data, context), sourceContext: context,
                     state: data.header.competitions[0].status?.type?.state || 'pre' };
-            }, data => getCacheDuration(data.state), forceRefresh, validateGameFacts);
+            }, data => getCacheDuration(data.state), forceRefresh, validate, identity);
         }
 
         // Owns complete week data, request sharing, and speculative loading. It never
@@ -750,7 +916,7 @@
                         if (!shouldFetchSummary(game)) continue;
                         try {
                             const factsStartedAt = Date.now();
-                            const facts = await fetchGameFacts(game.id, forceRefresh);
+                            const facts = await fetchGameFacts(game, forceRefresh);
                             summaries.set(game.id, facts);
                             // Derived week data must not outlive any fact it uses.
                             expiresAt = Math.min(expiresAt,
@@ -842,20 +1008,7 @@
         // GAME ANALYSIS
         // ============================================
         function shouldFetchSummary(game) {
-            const competition = game.competitions?.[0];
-            if (!competition) return false;
-
-            const homeScore = parseInt(competition.competitors?.find(c => c.homeAway === 'home')?.score || 0);
-            const awayScore = parseInt(competition.competitors?.find(c => c.homeAway === 'away')?.score || 0);
-            const differential = Math.abs(homeScore - awayScore);
-            const isPlayoff = game.season?.type > 2; // Regular season is type 2
-
-            // Only fetch summary for potential thrillers
-            if (isPlayoff) return true;
-            if (homeScore >= 15 && awayScore >= 15) return true;
-            if (differential <= 15) return true;
-
-            return false;
+            return isCompletedGame(game);
         }
 
         function evaluateGame(game, summary) {
@@ -1000,7 +1153,7 @@
                     <tr data-rule-id="${escapeHTML(rule.id)}" class="border-t border-gray-700 align-top">
                         <th scope="row" class="p-2 text-left">${escapeHTML(rule.id)}</th>
                         <td class="p-2"><pre class="whitespace-pre-wrap">${json(rule.inputs)}</pre></td>
-                        <td class="p-2"><pre class="whitespace-pre-wrap">${json(rule.threshold)}</pre><p>Weight: ${rule.weight}</p></td>
+                        <td class="p-2"><pre class="whitespace-pre-wrap">${json(rule.threshold)}</pre><p>Category cap: ${rule.weight}; selected tier: ${escapeHTML(rule.selectedTier ?? 'none')}</p><pre class="whitespace-pre-wrap">${json(rule.tiers)}</pre></td>
                         <td class="p-2">${rule.applicable ? 'Applicable' : 'Inapplicable'}; ${escapeHTML(rule.explanation)}</td>
                         <td class="p-2">${rule.points > 0 ? '+' : ''}${rule.points}</td>
                     </tr>`).join('');

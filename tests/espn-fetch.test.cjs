@@ -136,7 +136,7 @@ test('unexpected payloads are rejected without poisoning the caches', async () =
     for (const data of [{ error: 'Unavailable' }, null, { events: [] }]) {
         const page = app(() => jsonResponse(data));
         await assert.rejects(page.run('fetchScoreboard()'), /unexpected scoreboard/);
-        await assert.rejects(page.run('fetchGameFacts("123")'), /unexpected game summary/);
+        await assert.rejects(page.run(`fetchGameFacts(${JSON.stringify(game())})`), /unexpected game summary/);
         assert.equal(page.storage.size, 0);
     }
 });
@@ -154,12 +154,12 @@ test('weekly cache lifetimes reflect final, live, scheduled, and empty scoreboar
 
 test('summary requests go directly to ESPN and refresh bypasses permanent final caches', async () => {
     const page = app(() => jsonResponse(summary()));
-    await page.run('fetchGameFacts("123")');
-    await page.run('fetchGameFacts("123")');
+    await page.run(`fetchGameFacts(${JSON.stringify(game())})`);
+    await page.run(`fetchGameFacts(${JSON.stringify(game())})`);
     assert.equal(page.calls.length, 1);
     assert.equal(page.calls[0].url, ESPN + 'summary?event=123');
     assert.equal(JSON.parse(page.storage.get('summerall:facts_123')).duration, 30 * 24 * 60 * 60 * 1000);
-    await page.run('fetchGameFacts("123", true)');
+    await page.run(`fetchGameFacts(${JSON.stringify(game())}, true)`);
     assert.equal(page.calls.length, 2);
 });
 
@@ -365,11 +365,11 @@ for (const [state, lifetime] of [['pre', 60 * 60 * 1000], ['in', 5 * 60 * 1000]]
         await page.run('fetchScoreboardForWeek(11, 2, 2026)');
         now = lifetime - 60 * 1000;
         await page.run('loadGames(11, 2, 2026)');
-        assert.equal(page.calls.length, 1);
+        assert.equal(page.calls.filter(call => !call.url.includes('/summary?')).length, 1);
         assert.equal(page.element('spoiler-count').textContent, 1);
         now = lifetime + 60 * 1000;
         await page.run('loadGames(11, 2, 2026)');
-        assert.equal(page.calls.length, 2);
+        assert.equal(page.calls.filter(call => !call.url.includes('/summary?')).length, 2);
         assert.equal(page.element('spoiler-count').textContent, 2);
     });
 }
@@ -397,12 +397,12 @@ test('an older summary response cannot replace a refreshed final summary in pers
     let requests = 0;
     const page = app(() => ++requests === 1 ? oldResponse.promise
         : jsonResponse({ ...summary(), drives: { previous: [{ plays: [play(7, 0, 4), play(7, 10, 4)] }] } }));
-    const oldLoad = page.run('fetchGameFacts("123")');
-    await page.run('fetchGameFacts("123", true)');
+    const oldLoad = page.run(`fetchGameFacts(${JSON.stringify(game())})`);
+    await page.run(`fetchGameFacts(${JSON.stringify(game())}, true)`);
     oldResponse.resolve(jsonResponse({ ...summary(), marker: 'old' }));
     await oldLoad;
-    const cached = await page.run('fetchGameFacts("123")');
-    assert.equal(cached.playMetrics.leadChanges, 1);
+    const cached = await page.run(`fetchGameFacts(${JSON.stringify(game())})`);
+    assert.equal(cached.playMetrics.leadChangesLowerBound, 1);
     assert.equal(requests, 2);
 });
 
@@ -424,96 +424,41 @@ test('latest-week detection cannot extend stale in-memory results beyond its own
     assert.equal(page.element('spoiler-count').textContent, 2);
 });
 
-// Characterize the shipped policy before separating extraction, rules, and ranking.
-function evaluateFixture({ home = '24', away = '21', plays = [], records = ['1-0', '0-1'], overtime = false, withSummary = true } = {}) {
+const play = (homeScore, awayScore, period = 4) => ({ homeScore, awayScore, period: { number: period } });
+
+// Exercise the page boundary with scoreboard-only policy facts.
+function evaluateFixture({ home = '24', away = '21', records = ['1-0', '0-1'], overtime = false } = {}) {
     const fixture = game('policy', 'post', home, away);
     fixture.competitions[0].competitors.forEach((team, i) => {
         team.records[0].summary = records[i];
         team.linescores = Array.from({ length: overtime ? 5 : 4 }, () => ({ value: 0 }));
     });
-    const page = app(() => {});
-    const { watchable, points, reasons } = plain(page.run(`evaluateGame(${JSON.stringify(fixture)}, ${withSummary ? JSON.stringify({ drives: { previous: [{ plays }] } }) : 'null'})`));
-    return { watchable, points, reasons };
+    return plain(app(() => {}).run(`evaluateGame(${JSON.stringify(fixture)}, null)`));
 }
-const play = (homeScore, awayScore, period = 4) => ({ homeScore, awayScore, period: { number: period } });
-
-test('implemented margin, shootout, and recommendation boundaries are cumulative', () => {
-    for (const [home, away, points, reasons] of [
-        ['24', '15', 0, []], ['24', '16', 1, ['close']],
-        ['24', '21', 1, ['close']], ['24', '22', 2, ['close', 'very-close']],
-        ['33', '22', 0, []], ['33', '23', 1, ['shootout']],
-        ['32', '31', 3, ['close', 'very-close', 'shootout']],
-        ['33', '31', 4, ['close', 'very-close', 'shootout', 'super-shootout']]
-    ]) {
-        const result = evaluateFixture({ home, away });
-        assert.deepEqual(result, { watchable: points >= 3, points, reasons });
-    }
+test('page uses final-score categories and complete-game summary coverage', () => {
+    for (const [home, away, points] of [['24','15',1],['24','16',2],['24','22',3],['33','23',2],['32','31',4],['34','31',4]])
+        assert.equal(evaluateFixture({home,away}).points, points);
+    assert.equal(evaluateFixture({home:'24',away:'24',overtime:true}).points,4);
+    assert.equal(evaluateFixture({records:['1-5','0-6']}).points,2);
+    const page=app(()=>{});
+    assert.equal(page.run(`shouldFetchSummary(${JSON.stringify(game('blowout','post','40','3'))})`),true);
+    for(const state of ['pre','in']) assert.equal(page.run(`shouldFetchSummary(${JSON.stringify(game('pending',state))})`),false);
 });
 
-test('overtime bonus requires a non-tie and is inferred from home linescores', () => {
-    assert.equal(evaluateFixture({ home: '24', away: '24', overtime: true }).points, 2);
-    assert.equal(evaluateFixture({ home: '24', away: '23', overtime: true }).points, 3);
-    assert.equal(evaluateFixture({ home: '24', away: '23' }).points, 2);
-});
-
-test('comebacks require erasing a deficit, may lose later, and include overtime', () => {
-    assert.deepEqual(evaluateFixture({ plays: [play(0, 15, 3), play(15, 15, 3), play(15, 23), play(23, 23, 5)] }).reasons,
-        ['close', 'comeback', 'strong-comeback']);
-    assert.deepEqual(evaluateFixture({ plays: [play(0, 15, 2), play(15, 15, 3)] }).reasons, ['close']);
-    assert.deepEqual(evaluateFixture({ plays: [play(0, 14, 3), play(14, 14, 3), play(14, 21), play(21, 21)] }).reasons, ['close']);
-    assert.deepEqual(evaluateFixture({ plays: [play(0, 15, 3), play(14, 15)] }).reasons, ['close']);
-});
-
-test('lead changes ignore ties; bonuses accumulate at five, seven, and ten', () => {
-    for (const changes of [4, 5, 6, 7, 9, 10]) {
-        const plays = [play(3, 0, 3)];
-        let home = 3, away = 0;
-        for (let i = 0; i < changes; i++) {
-            if (i % 2 === 0) away = home + 3;
-            else home = away + 3;
-            plays.push(play(home, away, 3), play(Math.max(home, away), Math.max(home, away), 3));
-        }
-        const result = evaluateFixture({ plays });
-        assert.equal(result.points, 1 + Number(changes >= 5) + Number(changes >= 7) + Number(changes >= 10));
-    }
-});
-
-test('late bonus requires the final Q4 score to switch directly between leaders', () => {
-    assert.ok(evaluateFixture({ plays: [play(7, 10, 3), play(14, 10)] }).reasons.includes('late-lead-change'));
-    for (const plays of [
-        [play(7, 10, 3), play(10, 10), play(13, 10)],
-        [play(7, 10, 3), play(14, 10), play(17, 10)],
-        [play(7, 10, 3), play(14, 10, 5)]
-    ]) assert.ok(!evaluateFixture({ plays }).reasons.includes('late-lead-change'));
-});
-
-test('record rules use pre-game wins minus losses and include a negative point', () => {
-    assert.equal(evaluateFixture({ records: ['5-2', '4-3'] }).points, 2);
-    assert.equal(evaluateFixture({ records: ['4-2', '3-3'] }).points, 1);
-    assert.deepEqual(evaluateFixture({ records: ['1-5', '0-6'] }), { watchable: false, points: 0, reasons: ['close', 'losing-teams'] });
-    assert.equal(evaluateFixture({ home: '24', away: '24', records: ['4-2-1', '4-2-1'] }).points, 3);
-});
-
-test('summary-dependent bonuses are omitted when summary is unavailable', () => {
-    assert.deepEqual(evaluateFixture({ withSummary: false }), { watchable: false, points: 1, reasons: ['close'] });
-    const page = app(() => {});
-    assert.equal(page.run(`shouldFetchSummary(${JSON.stringify(game('blowout', 'post', '40', '3'))})`), false);
-});
-
-test('rendered stars favor all five-point games, then tied weekly leaders below five', async () => {
+test('rendered stars award every tied recommended leader three stars', async () => {
     const fixtures = [game('a', 'post', '33', '31'), game('b', 'post', '32', '31'), game('c', 'post', '32', '31')];
     const page = app(url => jsonResponse(url.includes('/summary?') ? summary() : scoreboard({ events: fixtures })));
     await page.run('loadGames(11, 2, 2026)');
-    assert.equal((page.element('watchable-games').innerHTML.match(/⭐/g) || []).length, 3);
+    assert.equal((page.element('watchable-games').innerHTML.match(/⭐/g) || []).length, 9);
     fixtures[0] = game('a', 'post', '32', '31');
     await page.run('loadGames(11, 2, 2026, true)');
-    assert.equal((page.element('watchable-games').innerHTML.match(/⭐/g) || []).length, 3);
+    assert.equal((page.element('watchable-games').innerHTML.match(/⭐/g) || []).length, 9);
     fixtures[0] = game('a', 'post', '40', '3');
     fixtures[1] = game('b', 'post', '24', '23');
     fixtures[1].competitions[0].competitors.forEach(team => { team.records[0].summary = '0-0'; });
     fixtures.splice(2);
     await page.run('loadGames(11, 2, 2026, true)');
-    assert.equal(page.element('watchable-games').innerHTML, '');
+    assert.equal((page.element('watchable-games').innerHTML.match(/⭐/g) || []).length, 3);
 });
 
 test('an older foreground load cannot replace a newer refresh on screen', async () => {
@@ -548,7 +493,7 @@ test('persistent entries contain compact facts, traces, actual scores and render
     const saved = JSON.parse(page.storage.get('summerall:decision_123'));
     assert.equal(saved.data.metrics.homeScore, 37);
     assert.equal(saved.data.metrics.awayScore, 36);
-    assert.equal(saved.data.evaluation.rules.length, 13);
+    assert.equal(saved.data.evaluation.rules.length, 9);
     const reload = app(() => { throw new Error('Must reuse compact cache'); }, { storage: page.storage });
     await reload.run('loadGames(11, 2, 2026)');
     assert.equal(reload.calls.length, 0);
@@ -567,7 +512,7 @@ test('scoring-version updates use cached metrics without ESPN requests, while ex
     await scored.run('loadGames(11, 2, 2026)');
     assert.equal(scored.calls.length, 0);
     assert.match(scored.element('watchable-games').innerHTML, /Home Team/);
-    assert.equal(JSON.parse(scored.storage.get('summerall:decision_123')).data.evaluation.points, 5);
+    assert.equal(JSON.parse(scored.storage.get('summerall:decision_123')).data.evaluation.points, 6);
     for (const [key, value] of scored.storage) {
         const saved = JSON.parse(value); saved.extractionVersion = 0;
         scored.storage.set(key, JSON.stringify(saved));
@@ -620,7 +565,7 @@ test('developer mode is opt-in, warns about spoilers, inspects every game, and r
     const inspection = page.element('developer-content').innerHTML;
     assert.equal(page.element('developer-section').classList.contains('hidden'), false);
     assert.equal((inspection.match(/data-game-id=/g) || []).length, 3);
-    assert.equal((inspection.match(/data-rule-id=/g) || []).length, 39);
+    assert.equal((inspection.match(/data-rule-id=/g) || []).length, 27);
     assert.match(inspection, /37/);
     assert.match(inspection, /40/);
     assert.match(inspection, /finalMargin/);

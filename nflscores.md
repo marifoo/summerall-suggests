@@ -1,3 +1,5 @@
+> Historical policy. Superseded by [scoring-new.md](scoring-new.md).
+
 Also read the README.md. 
 
 For this project, I want to add a different determination, if the game is watchable. Internally, this shall be done via points and the game with the highest points is the most watchable.

@@ -20,8 +20,8 @@ for (const corruption of ['null', 'missing rules', 'wrong total', 'wrong rule po
         assert.equal(reloaded.element('week-display').textContent, '2026 Week 11');
         assert.match(reloaded.element('watchable-games').innerHTML, /Home Team/);
         const repaired = JSON.parse(reloaded.storage.get(key));
-        assert.equal(repaired.data.evaluation.rules.length, 13);
-        assert.equal(repaired.data.evaluation.points, 5);
+        assert.equal(repaired.data.evaluation.rules.length, 9);
+        assert.equal(repaired.data.evaluation.points, 6);
         assert.equal(repaired.data.evaluation.rules[0].points, 1);
     });
 }

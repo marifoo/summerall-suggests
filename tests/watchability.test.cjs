@@ -9,19 +9,18 @@ const metrics = overrides => ({ completed: true, finalMargin: 1, combinedScore: 
 test('every rule traces its inputs, thresholds, applicability, and awarded points', () => {
     const input = metrics();
     const result = W.evaluate(input);
-    assert.equal(result.rules.length, 13);
-    assert.equal(new Set(result.rules.map(rule => rule.id)).size, 13);
+    assert.equal(result.rules.length, 9);
+    assert.equal(new Set(result.rules.map(rule => rule.id)).size, 9);
     for (const rule of result.rules) {
         assert.ok(Object.keys(rule.inputs).length > 0);
         assert.ok(Object.keys(rule.threshold).length > 0);
-        assert.equal(rule.applicable, true);
-        assert.equal(typeof rule.matched, 'boolean');
-        assert.equal(rule.points, rule.matched ? rule.weight : 0);
+        assert.ok(Array.isArray(rule.tiers));
+        assert.equal(rule.points, rule.tiers.find(t => t.id === rule.selectedTier)?.points ?? 0);
     }
-    assert.equal(result.rules.find(rule => rule.id === 'losing-teams').points, -1);
+    assert.ok(!result.rules.some(rule => rule.id === 'losing-teams'));
     assert.equal(result.rules.find(rule => rule.id === 'shootout').points, 0);
     assert.equal(result.points, result.rules.reduce((sum, rule) => sum + rule.points, 0));
-    assert.deepEqual(result.recommendation, { eligible: true, threshold: 3, points: 1, decision: false });
+    assert.deepEqual(result.recommendation, { eligible: true, threshold: 3, points: 3, decision: true });
     assert.deepEqual(W.evaluate(input), result);
     assert.equal(input.rules, undefined);
 });
@@ -47,7 +46,7 @@ test('extraction stores threshold-independent comeback facts and final Q4 score 
     assert.equal(result.comebackFacts.home.secondHalfDeficit, 16);
     assert.deepEqual(result.lastQ4Score, { before: { home: 16, away: 25 }, after: { home: 26, away: 25 }, previousLeader: 'away', newLeader: 'home' });
     assert.equal(result.lateLeadChange, true);
-    assert.equal(result.leadChanges, 1);
+    assert.equal(result.leadChangesLowerBound, 1);
     assert.deepEqual(W.extractPlayMetrics({ drives: { 0: { plays: [play(0, 16, 3), play(16, 16, 3), play(16, 25, 4), play(26, 25, 4)] } } }), result);
 });
 
@@ -58,7 +57,7 @@ test('ranking is independent of evaluation, handles all ties and leaves inputs u
     assert.deepEqual(ranked.map(item => item.ranking.stars), [3, 3, 0, 0, 0]);
     assert.deepEqual(ranked.map(item => item.ranking.rank), [1, 1, 3, 4, 5]);
     assert.ok(items.every(item => item.ranking === undefined));
-    assert.deepEqual(W.rankWeek(items.slice(0, 2)).map(item => item.ranking.stars), [1, 0]);
+    assert.deepEqual(W.rankWeek(items.slice(0, 2)).map(item => item.ranking.stars), [3, 0]);
     assert.deepEqual(W.rankWeek([]), []);
     const pending = W.rankWeek([{ metrics: { completed: false }, evaluation: { points: 0, watchable: false } }])[0];
     assert.equal(pending.ranking.rank, null);
