@@ -59,7 +59,7 @@ function app(fetchImpl, { storage = new Map(), storageBlocked = false, timers = 
     }
     const calls = [];
     const context = vm.createContext({
-        Watchability: require('../watchability.js'), AbortController, TypeError,
+        Watchability: require('../watchability.js'), CompactCache: require('../compact-cache.js'), AbortController, TypeError,
         Date: class extends Date { static now() { return now(); } },
         setTimeout(callback, delay) {
             if (delay !== 0) return requestTimers.setTimeout(callback, delay);
@@ -73,6 +73,8 @@ function app(fetchImpl, { storage = new Map(), storageBlocked = false, timers = 
         console: { log() {}, warn() {}, error() {} },
         fetch: async (url, options) => { calls.push({ url, options }); return fetchImpl(url, options); },
         localStorage: {
+            get length() { if (storageBlocked) throw new Error('Storage blocked'); return storage.size; },
+            key(i) { return [...storage.keys()][i] ?? null; },
             getItem(key) { if (storageBlocked) throw new Error('Storage blocked'); return storage.get(key) ?? null; },
             setItem(key, value) { if (storageBlocked) throw new Error('Storage blocked'); storage.set(key, value); },
             removeItem(key) { if (storageBlocked) throw new Error('Storage blocked'); storage.delete(key); }
@@ -225,7 +227,7 @@ test('unexpected payloads are rejected without poisoning the caches', async () =
     for (const data of [{ error: 'Unavailable' }, null, { events: [] }]) {
         const page = app(() => jsonResponse(data));
         await assert.rejects(page.run('fetchScoreboard()'), /unexpected scoreboard/);
-        await assert.rejects(page.run('fetchGameSummary("123")'), /unexpected game summary/);
+        await assert.rejects(page.run('fetchGameFacts("123")'), /unexpected game summary/);
         assert.equal(page.storage.size, 0);
     }
 });
@@ -243,12 +245,12 @@ test('weekly cache lifetimes reflect final, live, scheduled, and empty scoreboar
 
 test('summary requests go directly to ESPN and refresh bypasses permanent final caches', async () => {
     const page = app(() => jsonResponse(summary()));
-    await page.run('fetchGameSummary("123")');
-    await page.run('fetchGameSummary("123")');
+    await page.run('fetchGameFacts("123")');
+    await page.run('fetchGameFacts("123")');
     assert.equal(page.calls.length, 1);
     assert.equal(page.calls[0].url, ESPN + 'summary?event=123');
-    assert.equal(JSON.parse(page.storage.get('nfl_summary_123')).duration, 'Infinity');
-    await page.run('fetchGameSummary("123", true)');
+    assert.equal(JSON.parse(page.storage.get('summerall:facts_123')).duration, 30 * 24 * 60 * 60 * 1000);
+    await page.run('fetchGameFacts("123", true)');
     assert.equal(page.calls.length, 2);
 });
 
@@ -477,7 +479,7 @@ test('an older background scoreboard cannot overwrite refreshed scores after mem
     await oldLoad;
     for (const week of [9, 8, 7]) await page.run(`weekResults.load(${week}, 2, 2026)`);
     const revisited = await page.run('weekResults.load(10, 2, 2026)');
-    assert.equal(revisited.scoreboard.events[0].competitions[0].competitors[0].score, '50');
+    assert.equal(revisited.scoreboard.events[0].competitions[0].competitors[0].score, 50);
     assert.equal(requestsForWeek10, 2);
 });
 
@@ -485,13 +487,13 @@ test('an older summary response cannot replace a refreshed final summary in pers
     const oldResponse = deferred();
     let requests = 0;
     const page = app(() => ++requests === 1 ? oldResponse.promise
-        : jsonResponse({ ...summary(), marker: 'fresh' }));
-    const oldLoad = page.run('fetchGameSummary("123")');
-    await page.run('fetchGameSummary("123", true)');
+        : jsonResponse({ ...summary(), drives: { previous: [{ plays: [play(7, 0, 4), play(7, 10, 4)] }] } }));
+    const oldLoad = page.run('fetchGameFacts("123")');
+    await page.run('fetchGameFacts("123", true)');
     oldResponse.resolve(jsonResponse({ ...summary(), marker: 'old' }));
     await oldLoad;
-    const cached = await page.run('fetchGameSummary("123")');
-    assert.equal(cached.marker, 'fresh');
+    const cached = await page.run('fetchGameFacts("123")');
+    assert.equal(cached.playMetrics.leadChanges, 1);
     assert.equal(requests, 2);
 });
 
@@ -603,4 +605,94 @@ test('rendered stars favor all five-point games, then tied weekly leaders below 
     fixtures.splice(2);
     await page.run('loadGames(11, 2, 2026, true)');
     assert.equal(page.element('watchable-games').innerHTML, '');
+});
+
+test('an older foreground load cannot replace a newer refresh on screen', async () => {
+    const pending = deferred(); let requests = 0;
+    const page = app(() => ++requests === 1 ? pending.promise : jsonResponse(scoreboard({ events: [game('g', 'post', '50', '3')] })));
+    const old = page.run('loadGames(11, 2, 2026)');
+    await page.run('loadGames(11, 2, 2026, true)');
+    assert.match(page.element('spoiler-games').innerHTML, /3 - 50/);
+    pending.resolve(jsonResponse(scoreboard({ events: [game('g', 'post', '40', '3')] })));
+    await old;
+    assert.match(page.element('spoiler-games').innerHTML, /3 - 50/);
+});
+
+test('clearing while a week is loading prevents late responses from repopulating storage', async () => {
+    const pending = deferred();
+    const page = app(url => url.includes('/summary?') ? jsonResponse(summary()) : pending.promise);
+    const old = page.run('weekResults.load(11, 2, 2026)');
+    page.run('weekResults.clear()');
+    pending.resolve(jsonResponse(scoreboard()));
+    await old;
+    assert.equal(page.storage.size, 0);
+});
+
+test('persistent entries contain compact facts, traces, actual scores and rendering metadata only', async () => {
+    const huge = 'UNUSED_ESPN_PAYLOAD'.repeat(20000);
+    const rawSummary = { ...summary(), boxscore: { huge }, drives: { previous: [{ plays: [play(7, 0, 3), play(7, 10, 4)] }] } };
+    const page = app(url => jsonResponse(url.includes('/summary?') ? rawSummary : { ...scoreboard(), news: huge }));
+    await page.run('loadGames(11, 2, 2026)');
+    const encoded = [...page.storage.values()].join('');
+    assert.doesNotMatch(encoded, /UNUSED_ESPN_PAYLOAD|boxscore|"drives"|"plays"/);
+    assert.ok(encoded.length < 20000);
+    const saved = JSON.parse(page.storage.get('summerall:decision_123'));
+    assert.equal(saved.data.metrics.homeScore, 37);
+    assert.equal(saved.data.metrics.awayScore, 36);
+    assert.equal(saved.data.evaluation.rules.length, 13);
+    const reload = app(() => { throw new Error('Must reuse compact cache'); }, { storage: page.storage });
+    await reload.run('loadGames(11, 2, 2026)');
+    assert.equal(reload.calls.length, 0);
+    assert.equal(reload.element('watchable-games').innerHTML, page.element('watchable-games').innerHTML);
+});
+
+test('scoring-version updates use cached metrics without ESPN requests, while extraction updates refetch', async () => {
+    const page = app(url => jsonResponse(url.includes('/summary?') ? summary() : scoreboard()));
+    await page.run('loadGames(11, 2, 2026)');
+    for (const [key, value] of page.storage) {
+        const saved = JSON.parse(value); saved.rulesVersion = 0;
+        if (saved.data.evaluation) { saved.data.evaluation.points = 999; saved.data.evaluation.watchable = false; }
+        page.storage.set(key, JSON.stringify(saved));
+    }
+    const scored = app(() => { throw new Error('Scoring update must not refetch'); }, { storage: page.storage });
+    await scored.run('loadGames(11, 2, 2026)');
+    assert.equal(scored.calls.length, 0);
+    assert.match(scored.element('watchable-games').innerHTML, /Home Team/);
+    assert.equal(JSON.parse(scored.storage.get('summerall:decision_123')).data.evaluation.points, 5);
+    for (const [key, value] of scored.storage) {
+        const saved = JSON.parse(value); saved.extractionVersion = 0;
+        scored.storage.set(key, JSON.stringify(saved));
+    }
+    const extracted = app(url => jsonResponse(url.includes('/summary?') ? summary() : scoreboard()), { storage: scored.storage });
+    await extracted.run('loadGames(11, 2, 2026)');
+    assert.equal(extracted.calls.length, 2);
+});
+
+test('clear-cache action clears memory, persistent entries and queued prefetch without deleting other apps', async () => {
+    const storage = new Map([['other-app', 'keep'], ['nfl_summary_old', 'large legacy value']]);
+    const page = app(weeklyResponse, { storage });
+    await page.run('loadGames(11, 2, 2026)');
+    page.run('setupClearCacheButton()');
+    page.element('clear-cache-btn').handlers.click();
+    assert.deepEqual([...storage], [['other-app', 'keep']]);
+    const before = page.calls.length;
+    await page.runBackground();
+    assert.equal(page.calls.length, before);
+    await page.run('loadGames(11, 2, 2026)');
+    assert.equal(page.calls.length, before + 2);
+    assert.match(page.element('cache-status').textContent, /Cache cleared/);
+});
+
+test('clearing during discovery or a summary request prevents late persistent writes', async () => {
+    for (const stage of ['discovery', 'facts']) {
+        const pending = deferred();
+        const page = app(url => (stage === 'discovery' || url.includes('/summary?')) ? pending.promise : jsonResponse(scoreboard()));
+        const old = page.run(stage === 'discovery' ? 'loadGames()' : 'loadGames(11, 2, 2026)');
+        await new Promise(setImmediate);
+        page.run('weekResults.clear()');
+        pending.resolve(jsonResponse(stage === 'discovery' ? scoreboard() : summary()));
+        await old;
+        await page.runBackground();
+        assert.equal(page.storage.size, 0, stage);
+    }
 });

@@ -34,6 +34,8 @@
             <button id="refresh-btn" class="mt-2 text-sm text-gray-500 hover:text-gray-300 underline hidden">
                 Refresh data
             </button>
+            <button id="clear-cache-btn" class="mt-2 ml-3 text-sm text-gray-500 hover:text-gray-300 underline">Clear cache</button>
+            <span id="cache-status" role="status" class="block text-sm text-gray-400"></span>
         </header>
 
         <main>
@@ -80,6 +82,7 @@
     </div>
 
     <script src="watchability.js"></script>
+    <script src="compact-cache.js"></script>
     <script>
         // ============================================
         // CONFIGURATION
@@ -89,12 +92,13 @@
         const REQUEST_TIMEOUT_MS = 15000;
 
         const CACHE_KEYS = {
-            SCOREBOARD: 'nfl_scoreboard_v2',
-            SUMMARY_PREFIX: 'nfl_summary_'
+            SCOREBOARD: 'scoreboard',
+            SUMMARY_PREFIX: 'facts_',
+            DECISION_PREFIX: 'decision_'
         };
 
         const CACHE_DURATIONS = {
-            FINAL: Infinity,
+            FINAL: 30 * 24 * 60 * 60 * 1000, // final play metrics expire after 30 days
             IN_PROGRESS: 5 * 60 * 1000,    // 5 minutes
             SCHEDULED: 60 * 60 * 1000,     // 1 hour
             SCOREBOARD_FINAL: 2 * 60 * 60 * 1000  // 2 hours - scoreboard should refresh to get new week
@@ -143,62 +147,22 @@
         // ============================================
         // CACHING UTILITIES
         // ============================================
-        function getCachedEntry(key) {
-            try {
-                const cached = localStorage.getItem(key);
-                if (!cached) return null;
-
-                const { data, timestamp, duration } = JSON.parse(cached);
-                const expiresAt = duration === 'Infinity' ? Infinity : timestamp + duration;
-
-                if (Date.now() < expiresAt) {
-                    return { data, expiresAt };
-                }
-                localStorage.removeItem(key);
-                return null;
-            } catch (e) {
-                return null;
-            }
-        }
-
-        function getCachedData(key) {
-            return getCachedEntry(key)?.data ?? null;
-        }
-
-        function setCachedData(key, data, duration) {
-            try {
-                const cacheEntry = {
-                    data,
-                    timestamp: Date.now(),
-                    duration: duration === Infinity ? 'Infinity' : duration
-                };
-                localStorage.setItem(key, JSON.stringify(cacheEntry));
-            } catch (e) {
-                // localStorage might be full or unavailable
-                console.warn('Cache write failed:', e);
-            }
-        }
+        const persistentCache = CompactCache.createCache({
+            storage: () => localStorage,
+            now: () => Date.now(),
+            schemaVersion: 1,
+            extractionVersion: Watchability.EXTRACTION_VERSION,
+            rulesVersion: Watchability.RULES_VERSION,
+            evaluate: Watchability.evaluate
+        });
+        const getCachedEntry = key => persistentCache.getEntry(key);
+        const getCachedData = key => persistentCache.get(key);
+        const setCachedData = (key, data, duration) => persistentCache.set(key, data, duration);
 
         function getCacheDuration(gameStatus) {
             if (gameStatus === 'post') return CACHE_DURATIONS.FINAL;
             if (gameStatus === 'in') return CACHE_DURATIONS.IN_PROGRESS;
             return CACHE_DURATIONS.SCHEDULED;
-        }
-
-        // ============================================
-        // WEEK TIMING LOGIC
-        // ============================================
-        function shouldIncludeGame(gameDate) {
-            // Get current time in Berlin timezone
-            const now = new Date();
-            const berlinTime = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
-            const dayOfWeek = berlinTime.getDay(); // 0 = Sunday, 1 = Monday, etc.
-            const hour = berlinTime.getHours();
-
-            // On Monday morning (before noon Berlin), include Sunday games
-            // On Tuesday morning (before noon Berlin), include Monday games
-            // This ensures SNF and MNF are included appropriately
-            return true; // Include all games from the current week's scoreboard
         }
 
         // ============================================
@@ -212,7 +176,8 @@
         // pending requests, while a manual refresh always starts a fresh request.
         const fetchCachedESPN = (() => {
             const pending = new Map();
-            return async function(key, load, getDuration, forceRefresh) {
+            let epoch = 0;
+            const fetch = async function(key, load, getDuration, forceRefresh) {
                 if (!forceRefresh) {
                     if (pending.has(key)) return pending.get(key).promise;
                     const cached = getCachedData(key);
@@ -229,6 +194,9 @@
                 });
                 return request.promise;
             };
+            fetch.clear = () => { epoch++; pending.clear(); };
+            Object.defineProperty(fetch, 'epoch', { get: () => epoch });
+            return fetch;
         })();
 
         function isCompletedGame(game) {
@@ -274,11 +242,17 @@
                 }
                 data.week = { ...data.week, number: week };
                 data.season = { ...data.season, type: seasonType, year };
-                return data;
+                return Watchability.normalizeScoreboard(data);
             }, getScoreboardCacheDuration, forceRefresh));
         }
 
+        let discoveryGeneration = 0;
         async function fetchScoreboard(forceRefresh = false) {
+            const generation = ++discoveryGeneration;
+            const epoch = fetchCachedESPN.epoch;
+            function ensureCurrent() {
+                if (generation !== discoveryGeneration || epoch !== fetchCachedESPN.epoch) throw new Error('Request superseded. Refresh data to try again.');
+            }
             const cached = !forceRefresh && getCachedData(CACHE_KEYS.SCOREBOARD);
             if (cached?.scoreboard && cached.latest) {
                 latestWeek = cached.latest.week;
@@ -288,6 +262,7 @@
             }
 
             const current = validateScoreboard(await fetchESPN(SCOREBOARD_URL));
+            ensureCurrent();
             let period = {
                 week: current.week?.number,
                 seasonType: current.season.type,
@@ -308,6 +283,7 @@
             // Use the same season transitions as navigation, including the previous season.
             for (let attempts = 0; attempts < 6; attempts++) {
                 const data = await fetchScoreboardForWeek(period.week, period.seasonType, period.year, forceRefresh);
+                ensureCurrent();
                 if (data.events.some(isCompletedGame)) {
                     setCachedData(CACHE_KEYS.SCOREBOARD, {
                         scoreboard: data,
@@ -379,20 +355,21 @@
             nextBtn.disabled = isAtLatestWeek();
         }
 
-        async function fetchGameSummary(gameId, forceRefresh = false) {
+        async function fetchGameFacts(gameId, forceRefresh = false) {
             const cacheKey = CACHE_KEYS.SUMMARY_PREFIX + gameId;
             return fetchCachedESPN(cacheKey, async () => {
                 const data = await fetchESPN(SUMMARY_URL + encodeURIComponent(gameId));
                 if (!data?.header?.competitions?.length) {
                     throw new Error('ESPN returned an unexpected game summary response. Please try again later.');
                 }
-                return data;
-            }, data => getCacheDuration(data.header.competitions[0].status?.type?.state || 'pre'), forceRefresh);
+                return { playMetrics: Watchability.extractPlayMetrics(data),
+                    state: data.header.competitions[0].status?.type?.state || 'pre' };
+            }, data => getCacheDuration(data.state), forceRefresh);
         }
 
         // Owns complete week data, request sharing, and speculative loading. It never
-        // changes the UI or navigation state. Keep three weeks in memory because full
-        // ESPN summaries can exceed localStorage's quota after a single week.
+        // changes the UI or navigation state. Keep three compact weeks in memory
+        // so navigation also works when browser storage is unavailable.
         const weekResults = (() => {
             const weeks = new Map();
             let backgroundTimer = null;
@@ -426,9 +403,10 @@
                     const summaries = new Map();
                     let complete = true;
                     for (const game of data.events.filter(isCompletedGame)) {
+                        if (weeks.get(key) !== entry) break;
                         if (!shouldFetchSummary(game)) continue;
                         try {
-                            summaries.set(game.id, await fetchGameSummary(game.id, forceRefresh));
+                            summaries.set(game.id, await fetchGameFacts(game.id, forceRefresh));
                         } catch (error) {
                             complete = false;
                             console.warn(`Failed to fetch summary for game ${game.id}:`, error);
@@ -442,7 +420,22 @@
                         if (weeks.size <= 3) break;
                         if (oldEntry.expiresAt !== Infinity) weeks.delete(oldKey);
                     }
-                    return { scoreboard: data, summaries };
+                    const analyses = data.events.map(game => {
+                        const facts = summaries.get(game.id);
+                        const metrics = Watchability.extractMetrics(game, facts?.playMetrics,
+                            facts ? 'fetched' : isCompletedGame(game) && shouldFetchSummary(game) ? 'fetch-failed' : 'not-requested');
+                        const decisionKey = CACHE_KEYS.DECISION_PREFIX + game.id;
+                        const saved = getCachedData(decisionKey);
+                        const evaluation = saved && JSON.stringify(saved.metrics) === JSON.stringify(metrics) ?
+                            saved.evaluation : Watchability.evaluate(metrics);
+                        // Only the current load may persist decisions. Clearing the cache
+                        // or refreshing detaches older requests from this entry.
+                        if (weeks.get(key) === entry && (!saved || JSON.stringify(saved.metrics) !== JSON.stringify(metrics))) {
+                            setCachedData(decisionKey, { metrics, evaluation }, Math.max(1, expiresAt - Date.now()));
+                        }
+                        return { game, metrics, evaluation };
+                    });
+                    return { scoreboard: data, analyses };
                 })().catch(error => {
                     if (weeks.get(key) === entry) weeks.delete(key);
                     throw error;
@@ -481,7 +474,13 @@
                 }, 0);
             }
 
-            return { load, prefetchPrevious, cancelPrefetch };
+            function clear() {
+                cancelPrefetch();
+                weeks.clear();
+                fetchCachedESPN.clear();
+                persistentCache.clear();
+            }
+            return { load, prefetchPrevious, cancelPrefetch, clear };
         })();
 
         // ============================================
@@ -570,8 +569,8 @@
             const homeTeam = competition?.competitors?.find(c => c.homeAway === 'home');
             const awayTeam = competition?.competitors?.find(c => c.homeAway === 'away');
 
-            const homeScore = homeTeam?.score || '0';
-            const awayScore = awayTeam?.score || '0';
+            const homeScore = homeTeam?.score ?? 'Unavailable';
+            const awayScore = awayTeam?.score ?? 'Unavailable';
 
             const status = game.status?.type?.shortDetail || 'Final';
 
@@ -582,8 +581,8 @@
             let quarterScores = '';
             if (homeLinescores.length > 0) {
                 const quarters = homeLinescores.map((_, i) => `Q${i + 1}`).join('</th><th class="px-2">');
-                const awayQuarters = awayLinescores.map(q => q.value || 0).join('</td><td class="px-2 text-center">');
-                const homeQuarters = homeLinescores.map(q => q.value || 0).join('</td><td class="px-2 text-center">');
+                const awayQuarters = awayLinescores.map(q => q.value ?? '—').join('</td><td class="px-2 text-center">');
+                const homeQuarters = homeLinescores.map(q => q.value ?? '—').join('</td><td class="px-2 text-center">');
 
                 quarterScores = `
                     <table class="text-xs text-gray-400 mt-2 mx-auto">
@@ -632,7 +631,10 @@
         // ============================================
         // MAIN APPLICATION
         // ============================================
+        let visibleLoadGeneration = 0;
         async function loadGames(explicitWeek = null, explicitSeasonType = null, explicitYear = null, forceRefresh = false) {
+            const generation = ++visibleLoadGeneration;
+            const cacheEpoch = fetchCachedESPN.epoch;
             weekResults.cancelPrefetch();
             const watchableContainer = document.getElementById('watchable-games');
             const spoilerContainer = document.getElementById('spoiler-games');
@@ -658,8 +660,9 @@
             spoilerToggle.querySelector('.font-semibold').textContent = 'Show Spoilers';
 
             try {
-                const { scoreboard, summaries } = await weekResults.load(
+                const { scoreboard, analyses } = await weekResults.load(
                     explicitWeek, explicitSeasonType, explicitYear, forceRefresh);
+                if (generation !== visibleLoadGeneration) return;
 
                 // Display week info
                 const week = scoreboard.week?.number || '';
@@ -715,16 +718,11 @@
                     spoilerContainer.innerHTML = '';
                     document.getElementById('refresh-btn').classList.remove('hidden');
                     updateNavigationButtons();
-                    weekResults.prefetchPrevious(week, seasonType, seasonYear);
+                    if (cacheEpoch === fetchCachedESPN.epoch) weekResults.prefetchPrevious(week, seasonType, seasonYear);
                     return;
                 }
 
-                const gameAnalysis = Watchability.rankWeek(completedGames.map(game => {
-                    const summary = summaries.get(game.id) || null;
-                    const metrics = Watchability.extractMetrics(game, Watchability.extractPlayMetrics(summary),
-                        summary ? 'available' : shouldFetchSummary(game) ? 'fetch-failed' : 'not-requested');
-                    return { game, metrics, evaluation: Watchability.evaluate(metrics) };
-                }));
+                const gameAnalysis = Watchability.rankWeek(analyses.filter(item => item.metrics.completed));
                 const watchableGames = gameAnalysis.filter(item => item.evaluation.watchable);
                 const otherGames = gameAnalysis.filter(item => !item.evaluation.watchable);
 
@@ -758,9 +756,10 @@
 
                 // Update navigation buttons
                 updateNavigationButtons();
-                weekResults.prefetchPrevious(week, seasonType, seasonYear);
+                if (cacheEpoch === fetchCachedESPN.epoch) weekResults.prefetchPrevious(week, seasonType, seasonYear);
 
             } catch (error) {
+                if (generation !== visibleLoadGeneration) return;
                 console.error('Failed to load games:', error);
                 loading.classList.add('hidden');
                 watchableSection.classList.remove('hidden');
@@ -777,7 +776,7 @@
                     updateNavigationButtons();
                 }
             } finally {
-                refreshBtn.disabled = false;
+                if (generation === visibleLoadGeneration) refreshBtn.disabled = false;
             }
         }
 
@@ -798,7 +797,7 @@
             const refreshBtn = document.getElementById('refresh-btn');
             refreshBtn.addEventListener('click', () => {
                 try {
-                    localStorage.removeItem(CACHE_KEYS.SCOREBOARD);
+                    persistentCache.remove(CACHE_KEYS.SCOREBOARD);
                 } catch (e) {
                     // Refresh also works when browser storage is unavailable.
                 }
@@ -808,6 +807,13 @@
                 } else {
                     return loadGames(currentWeek, currentSeasonType, currentSeasonYear, true);
                 }
+            });
+        }
+
+        function setupClearCacheButton() {
+            document.getElementById('clear-cache-btn').addEventListener('click', () => {
+                weekResults.clear();
+                document.getElementById('cache-status').textContent = 'Cache cleared. Refresh data to fetch again.';
             });
         }
 
@@ -835,6 +841,7 @@
         document.addEventListener('DOMContentLoaded', () => {
             setupSpoilerToggle();
             setupRefreshButton();
+            setupClearCacheButton();
             setupNavigationButtons();
             loadGames();
         });

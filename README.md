@@ -60,17 +60,62 @@ schedule order for ties. A low-scoring weekly leader is not recommended automati
 - **API Requests**: Fetches scoreboards and game summaries directly from ESPN, with a 15-second timeout and HTTP/JSON error handling; no proxy or API key required
 - **Week Loading**: Uses ESPN's current season/week to request the full week's schedule, then steps back to the most recent week with completed games
 - **Background Loading**: Starts after the selected week renders. Loads the previous two weeks sequentially, including summaries needed for recommendations, using the same season transitions as navigation. Navigation shares any request already in flight and stops the old prefetch chain; background errors never replace the visible results.
-- **Caching Strategy**:
-  - Each week cached separately for quick navigation
-  - Up to three complete weeks retained in memory, so preloaded results remain available when localStorage is full or blocked
-  - Moving a cached scoreboard into memory preserves its original expiration, including the five-minute latest-week detection limit
-  - Scoreboard (all games final): 2 hours
-  - Game summaries (final): Cached indefinitely
-  - In-progress games: 5 minutes
-  - Scheduled games: 1 hour
-  - Latest-week detection: 5 minutes
-  - Manual refresh bypasses the selected week's scoreboard and game-summary caches
-  - Older in-flight responses cannot overwrite a newer refresh in persistent storage
+- **Caching Strategy**: Compact, versioned, bounded localStorage plus up to three complete weeks in memory; see below.
+
+## Compact cache and invalidation
+
+`compact-cache.js` owns the persistent envelope and storage policy. Entries under
+`summerall:` contain allowlisted scoreboard metadata (team names/logos, status,
+actual scores, quarter scores, total records, dates, season calendar), extracted
+play facts, and individual metrics plus complete decision traces. Full ESPN
+summaries, drives, plays, boxscores, and unrelated scoreboard fields are never
+persisted. Ranking is derived from the selected week's evaluations.
+
+Three versions have independent meanings:
+
+- **Schema version** (`schemaVersion` in the page): changes to the envelope or
+  rendering contract remove incompatible entries.
+- **Extraction version** (`EXTRACTION_VERSION` in `watchability.js`): bump when the
+  required facts or extraction semantics change. Old entries are removed and ESPN
+  is refetched because their metrics cannot establish the new facts. This is a
+  conservative invalidation of all extracted entries, including scoreboards.
+- **Rules version** (`RULES_VERSION` in `watchability.js`): bump for scoring weights,
+  thresholds, recommendation, or star policy. Valid cached metrics are reevaluated
+  and the new trace saved on read, without fetching ESPN. Scoreboard/play facts
+  remain reusable. Normal expiry or eviction can independently require a fetch.
+
+Startup and subsequent cache access remove expired, corrupt, incompatible, and
+legacy app-owned `nfl_scoreboard*` / `nfl_summary_*` entries. Other localStorage
+keys are preserved. Storage is bounded to **128 entries and 1.5 MiB** (UTF-16
+key/value estimate), with least-recently-used eviction. Quota failures evict older
+entries and retry; unavailable storage becomes a cache miss. Three complete weeks
+remain usable in memory when persistent storage cannot be used.
+
+Lifetimes:
+
+| Entry | Lifetime |
+|-------|----------|
+| All-final scoreboard | 2 hours |
+| Scoreboard with live games | 5 minutes |
+| Scheduled or empty scoreboard | 1 hour |
+| Latest-week detection | 5 minutes |
+| Final summary-derived play metrics | 30 days |
+| Live / scheduled summary-derived metrics | 5 minutes / 1 hour |
+| Individual metrics and decisions | Selected scoreboard's remaining lifetime |
+
+Reads preserve original expiration; warming memory cannot renew scoreboard or
+latest-detection lifetimes. Expired facts are refetched, rather than kept forever.
+Manual refresh bypasses the selected week's scoreboard and play-fact caches;
+refresh at the latest week also rediscovers the latest week. Requests share work,
+but a refresh starts a fresh request and older responses cannot replace it in
+storage or on screen. Background loading still fetches the previous two weeks
+sequentially after rendering, stops its old chain on navigation, and keeps failures
+out of the visible results.
+
+**Clear cache** removes persistent and in-memory app entries and cancels queued
+prefetch. In-flight responses cannot repopulate the cleared cache. The visible
+results stay available; refresh or subsequent navigation fetches again. Clearing
+also works when localStorage is blocked.
 
 ## Architecture
 
