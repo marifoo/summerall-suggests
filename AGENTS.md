@@ -15,6 +15,18 @@ or workflows change.
 - Minimize the cognitive effort of future changes. Prefer clear names, explicit
   invariants, and simple control flow over cleverness or unnecessary abstractions.
 
+## Hosting and distribution
+
+- Keep the app easy to host on GitHub Pages directly from the repository, including
+  under a repository subpath, with no build step, package installation, backend,
+  secrets, or custom server configuration.
+- Prefer a single standalone `index.html` with application JavaScript and CSS
+  embedded, so copying or downloading that file and opening it locally works.
+  Preserve deep-module boundaries with narrow interfaces inside the file.
+- External ESPN data and CDN styling may require internet access; document those
+  dependencies. Keep tests separate from the deployable file, and test the actual
+  embedded modules rather than maintaining duplicate production implementations.
+
 ## Testing and commits
 
 - Every bug fix must follow red-green testing: first add a regression test that

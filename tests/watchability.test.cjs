@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const W = require('../watchability.js');
+const W = require('./app-modules.cjs').loadModule('watchability-module');
 const play = (homeScore, awayScore, period) => ({ homeScore, awayScore, period: { number: period } });
 const facts = plays => W.extractPlayMetrics({ drives: { previous: [{ plays }] } });
 const metrics = overrides => ({ completed: true, finalMargin: 1, combinedScore: 47, overtime: false,

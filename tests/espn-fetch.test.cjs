@@ -59,7 +59,7 @@ function app(fetchImpl, { storage = new Map(), storageBlocked = false, timers = 
     }
     const calls = [];
     const context = vm.createContext({
-        Watchability: require('../watchability.js'), CompactCache: require('../compact-cache.js'), AbortController, TypeError,
+        Watchability: require('./app-modules.cjs').loadModule('watchability-module'), CompactCache: require('./app-modules.cjs').loadModule('compact-cache-module'), AbortController, TypeError,
         Date: class extends Date { static now() { return now(); } },
         setTimeout(callback, delay) {
             if (delay !== 0) return requestTimers.setTimeout(callback, delay);

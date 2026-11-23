@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { createCache } = require('../compact-cache.js');
+const { createCache } = require('./app-modules.cjs').loadModule('compact-cache-module');
 function storage(map = new Map(), quota = Infinity) {
     return { map, get length() { return map.size; }, key(i) { return [...map.keys()][i] ?? null; },
         getItem: key => map.get(key) ?? null,

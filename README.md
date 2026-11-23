@@ -75,7 +75,7 @@ and stars; scores and rule details remain behind the separate spoiler opt-ins.
 
 ## Technical Details
 
-- **Static App**: Pure vanilla JavaScript (ES6+), no build tools required
+- **Standalone HTML App**: Application code is embedded in `index.html`; no build tools or package installation required
 - **Styling**: Tailwind CSS via CDN
 - **Data Source**: ESPN public APIs
 - **API Requests**: Fetches scoreboards and game summaries directly from ESPN, with a 15-second timeout and HTTP/JSON error handling; no proxy or API key required
@@ -85,7 +85,7 @@ and stars; scores and rule details remain behind the separate spoiler opt-ins.
 
 ## Compact cache and invalidation
 
-`compact-cache.js` owns the persistent envelope and storage policy. Entries under
+The inline `compact-cache-module` in `index.html` owns the persistent envelope and storage policy. Entries under
 `summerall:` contain allowlisted scoreboard metadata (team names/logos, status,
 actual scores, quarter scores, total records, dates, season calendar), extracted
 play facts, and individual metrics plus complete decision traces. Full ESPN
@@ -96,11 +96,11 @@ Three versions have independent meanings:
 
 - **Schema version** (`schemaVersion` in the page): changes to the envelope or
   rendering contract remove incompatible entries.
-- **Extraction version** (`EXTRACTION_VERSION` in `watchability.js`): bump when the
+- **Extraction version** (`EXTRACTION_VERSION` in the inline `watchability-module`): bump when the
   required facts or extraction semantics change. Old entries are removed and ESPN
   is refetched because their metrics cannot establish the new facts. This is a
   conservative invalidation of all extracted entries, including scoreboards.
-- **Rules version** (`RULES_VERSION` in `watchability.js`): bump for scoring weights,
+- **Rules version** (`RULES_VERSION` in the inline `watchability-module`): bump for scoring weights,
   thresholds, recommendation, or star policy. Valid cached metrics are reevaluated
   and the new trace saved on read, without fetching ESPN. Scoreboard/play facts
   remain reusable. Normal expiry or eviction can independently require a fetch.
@@ -140,13 +140,13 @@ also works when localStorage is blocked.
 
 ## Architecture
 
-`watchability.js` is a pure module with four boundaries: allowlist ESPN normalization,
+The inline `watchability-module` in `index.html` is a pure module with four boundaries: allowlist ESPN normalization,
 threshold-independent metric extraction, deterministic individual evaluation, and
 week-level ranking. `evaluate(metrics)` returns every rule's inputs, thresholds,
 weight, applicability, match result, awarded points (including zero and negative),
 total, and recommendation cutoff/decision. `rankWeek` adds rank and star explanations
 without mutating evaluations. All scoring thresholds and weights live together in
-that module. `compact-cache.js` owns versioning, expiry, bounds, eviction, and
+that module. The inline `compact-cache-module` in `index.html` owns versioning, expiry, bounds, eviction, and
 storage failures behind `getEntry` / `get` / `set` / `remove` / `clear`. The page
 owns request sharing, week loading, navigation, and rendering.
 
@@ -163,7 +163,12 @@ implementation. Empty or incomplete play history cannot establish a negative fac
 3. Set source to the main branch
 4. Access your site at `https://<username>.github.io/<repo-name>`
 
-Or simply open `index.html` in any modern browser.
+GitHub Pages serves the repository directly, including a repository subpath; no
+build, deployment script, backend, or secrets are required. You can also download
+or copy **only `index.html`** and open it in a modern browser. The scoring and cache
+modules are embedded in named script blocks, preserving their separate interfaces.
+Internet access is needed for ESPN data and Tailwind CDN styling. Embedded CSS
+keeps spoiler sections hidden even if the styling CDN fails.
 
 ## Data Sources
 
@@ -180,13 +185,26 @@ Run the scoring, extraction, ranking, fetch, and rendering regression tests with
 node --test tests/*.test.cjs
 ```
 
-The suite covers scoring boundaries and cumulative bonuses, comeback/tie semantics,
+Tests load the canonical named script blocks from `index.html`; there are no
+duplicate scoring/cache implementations. The suite covers scoring boundaries and cumulative bonuses, comeback/tie semantics,
 negative and zero points, missing data, star ties, compact serialization, independent
 version changes, expiry preservation, eviction/quota/blocked storage, request sharing,
 refresh/clear races, sequential prefetch, and opt-in developer rendering. Browser
-smoke verification can serve the static files, intercept the ESPN endpoints with
-fixtures, and check normal/developer modes, mobile overflow, clear-cache, and reload
-reset without relying on live game results.
+smoke verification is also available with an installed Playwright package and
+Chromium (optional testing dependencies; not needed to run or deploy the app):
+
+```sh
+SUMMERALL_PLAYWRIGHT_PATH=/path/to/playwright \
+SUMMERALL_CHROMIUM_PATH=/path/to/chromium \
+node tests/browser-smoke.cjs
+```
+
+If Playwright resolves normally and its Chromium is installed, the environment
+variables may be omitted. This runner copies only `index.html` into a temporary
+directory and checks a static root URL, GitHub Pages repository subpath, and local
+file with the styling CDN blocked. ESPN fixtures make results deterministic. It
+checks spoiler protection, developer inspection, mobile overflow, clear-cache, and
+reload defaults without relying on live game results.
 
 See [AGENTS.md](AGENTS.md) for design principles, red-green bug-fix testing, and atomic commit requirements.
 
