@@ -17,17 +17,40 @@ A spoiler-free NFL game recommendation website that helps you decide which games
 
 ## How Games Are Recommended
 
-A game is marked as "watchable" if it meets **any** of these criteria:
+The implemented points policy is the compatibility baseline. Bonuses accumulate:
 
-| Criteria | Condition |
-|----------|-----------|
-| Close Game | Both teams scored 18+ AND final margin ≤ 7 |
-| Comeback | 14+ point deficit in 2nd half, then won or lost by 1 |
-| Playoff | Any postseason game with margin ≤ 9 |
-| High-Scoring | Combined score 55+ AND margin ≤ 15 |
-| Lead Changes | 5+ lead changes AND both teams scored 15+ |
+| Rule | Condition | Points |
+|------|-----------|--------|
+| Close / very close | Margin ≤ 8 / ≤ 2 | +1 each |
+| Overtime | Home linescores contain more than four periods, final score not tied | +1 |
+| Comeback | Observed deficit ≥ 15 in Q3 or later, then tied or led | +1 |
+| Strong comeback | Observed deficit ≥ 8 in Q4 or later, then tied or led | +1 |
+| Shootout / super shootout | Combined score ≥ 55 / ≥ 64, margin ≤ 10 | +1 each |
+| Late lead change | Last score change in Q4 switches directly between opposing leaders | +1 |
+| Lead changes | At least 5 / 7 / 10 changes (ties preserve the previous leader) | +1 each |
+| Winning records | Both pre-game wins minus losses ≥ 2 | +1 |
+| Losing records | Both pre-game wins minus losses ≤ -4 | -1 |
 
-Games meeting the most criteria receive a star icon.
+Recommendations require **3+ points**. Every recommended game with **5+ points
+gets 3 stars**; otherwise games tied for the weekly maximum get **1 star**.
+Other recommended games have no stars. Sort order is descending points, preserving
+schedule order for ties. A low-scoring weekly leader is not recommended automatically.
+
+### Policy discrepancies (preserved, not silently corrected)
+
+- The former README described an obsolete any-criterion policy (18+ scores,
+  seven-point margins, playoff bonuses, 14-point comebacks, and different shootout
+  conditions). The implementation uses the cumulative points policy above.
+- [nflscores.md](nflscores.md) requests recommendations at **2+**, **1 star at 5+**,
+  and **3 stars for the weekly maximum**. The implementation uses **3+**, **3 stars
+  at 5+**, and **1 star for a lower weekly maximum** instead.
+- Comebacks require subsequently tying or leading, not merely reducing the deficit;
+  Q4 comeback detection also includes overtime. The last Q4 score must switch
+  directly between leaders; a tie followed by a lead does not qualify.
+- Summary fetching is selective: postseason events (when event-level season metadata
+  exists), both teams scoring 15+, or margin ≤ 15. Skipped blowouts receive no
+  summary-dependent bonuses even if an unobserved comeback happened. Record
+  differentials assume ESPN's total record includes the completed game.
 
 ## Technical Details
 

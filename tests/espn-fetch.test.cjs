@@ -512,3 +512,94 @@ test('latest-week detection cannot extend stale in-memory results beyond its own
     await page.run('loadGames()');
     assert.equal(page.element('spoiler-count').textContent, 2);
 });
+
+// Characterize the shipped policy before separating extraction, rules, and ranking.
+function evaluateFixture({ home = '24', away = '21', plays = [], records = ['1-0', '0-1'], overtime = false, withSummary = true } = {}) {
+    const fixture = game('policy', 'post', home, away);
+    fixture.competitions[0].competitors.forEach((team, i) => {
+        team.records[0].summary = records[i];
+        team.linescores = Array.from({ length: overtime ? 5 : 4 }, () => ({ value: 0 }));
+    });
+    const page = app(() => {});
+    return plain(page.run(`evaluateGame(${JSON.stringify(fixture)}, ${withSummary ? JSON.stringify({ drives: { previous: [{ plays }] } }) : 'null'})`));
+}
+const play = (homeScore, awayScore, period = 4) => ({ homeScore, awayScore, period: { number: period } });
+
+test('implemented margin, shootout, and recommendation boundaries are cumulative', () => {
+    for (const [home, away, points, reasons] of [
+        ['24', '15', 0, []], ['24', '16', 1, ['close']],
+        ['24', '21', 1, ['close']], ['24', '22', 2, ['close', 'very-close']],
+        ['33', '22', 0, []], ['33', '23', 1, ['shootout']],
+        ['32', '31', 3, ['close', 'very-close', 'shootout']],
+        ['33', '31', 4, ['close', 'very-close', 'shootout', 'super-shootout']]
+    ]) {
+        const result = evaluateFixture({ home, away });
+        assert.deepEqual(result, { watchable: points >= 3, points, reasons });
+    }
+});
+
+test('overtime bonus requires a non-tie and is inferred from home linescores', () => {
+    assert.equal(evaluateFixture({ home: '24', away: '24', overtime: true }).points, 2);
+    assert.equal(evaluateFixture({ home: '24', away: '23', overtime: true }).points, 3);
+    assert.equal(evaluateFixture({ home: '24', away: '23' }).points, 2);
+});
+
+test('comebacks require erasing a deficit, may lose later, and include overtime', () => {
+    assert.deepEqual(evaluateFixture({ plays: [play(0, 15, 3), play(15, 15, 3), play(15, 23), play(23, 23, 5)] }).reasons,
+        ['close', 'comeback', 'strong-comeback']);
+    assert.deepEqual(evaluateFixture({ plays: [play(0, 15, 2), play(15, 15, 3)] }).reasons, ['close']);
+    assert.deepEqual(evaluateFixture({ plays: [play(0, 14, 3), play(14, 14, 3), play(14, 21), play(21, 21)] }).reasons, ['close']);
+    assert.deepEqual(evaluateFixture({ plays: [play(0, 15, 3), play(14, 15)] }).reasons, ['close']);
+});
+
+test('lead changes ignore ties; bonuses accumulate at five, seven, and ten', () => {
+    for (const changes of [4, 5, 6, 7, 9, 10]) {
+        const plays = [play(3, 0, 3)];
+        let home = 3, away = 0;
+        for (let i = 0; i < changes; i++) {
+            if (i % 2 === 0) away = home + 3;
+            else home = away + 3;
+            plays.push(play(home, away, 3), play(Math.max(home, away), Math.max(home, away), 3));
+        }
+        const result = evaluateFixture({ plays });
+        assert.equal(result.points, 1 + Number(changes >= 5) + Number(changes >= 7) + Number(changes >= 10));
+    }
+});
+
+test('late bonus requires the final Q4 score to switch directly between leaders', () => {
+    assert.ok(evaluateFixture({ plays: [play(7, 10, 3), play(14, 10)] }).reasons.includes('late-lead-change'));
+    for (const plays of [
+        [play(7, 10, 3), play(10, 10), play(13, 10)],
+        [play(7, 10, 3), play(14, 10), play(17, 10)],
+        [play(7, 10, 3), play(14, 10, 5)]
+    ]) assert.ok(!evaluateFixture({ plays }).reasons.includes('late-lead-change'));
+});
+
+test('record rules use pre-game wins minus losses and include a negative point', () => {
+    assert.equal(evaluateFixture({ records: ['5-2', '4-3'] }).points, 2);
+    assert.equal(evaluateFixture({ records: ['4-2', '3-3'] }).points, 1);
+    assert.deepEqual(evaluateFixture({ records: ['1-5', '0-6'] }), { watchable: false, points: 0, reasons: ['close', 'losing-teams'] });
+    assert.equal(evaluateFixture({ home: '24', away: '24', records: ['4-2-1', '4-2-1'] }).points, 3);
+});
+
+test('summary-dependent bonuses are omitted when summary is unavailable', () => {
+    assert.deepEqual(evaluateFixture({ withSummary: false }), { watchable: false, points: 1, reasons: ['close'] });
+    const page = app(() => {});
+    assert.equal(page.run(`shouldFetchSummary(${JSON.stringify(game('blowout', 'post', '40', '3'))})`), false);
+});
+
+test('rendered stars favor all five-point games, then tied weekly leaders below five', async () => {
+    const fixtures = [game('a', 'post', '33', '31'), game('b', 'post', '32', '31'), game('c', 'post', '32', '31')];
+    const page = app(url => jsonResponse(url.includes('/summary?') ? summary() : scoreboard({ events: fixtures })));
+    await page.run('loadGames(11, 2, 2026)');
+    assert.equal((page.element('watchable-games').innerHTML.match(/⭐/g) || []).length, 3);
+    fixtures[0] = game('a', 'post', '32', '31');
+    await page.run('loadGames(11, 2, 2026, true)');
+    assert.equal((page.element('watchable-games').innerHTML.match(/⭐/g) || []).length, 3);
+    fixtures[0] = game('a', 'post', '40', '3');
+    fixtures[1] = game('b', 'post', '24', '23');
+    fixtures[1].competitions[0].competitors.forEach(team => { team.records[0].summary = '0-0'; });
+    fixtures.splice(2);
+    await page.run('loadGames(11, 2, 2026, true)');
+    assert.equal(page.element('watchable-games').innerHTML, '');
+});
