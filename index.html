@@ -1,0 +1,1112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NFL Game Recommender</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .game-card {
+            transition: transform 0.2s ease-in-out;
+        }
+        .game-card:hover {
+            transform: translateY(-2px);
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8 max-w-4xl">
+        <header class="text-center mb-8">
+            <h1 class="text-4xl font-bold text-white mb-2">NFL Game Recommender</h1>
+            <div class="flex items-center justify-center gap-4">
+                <button id="prev-week-btn" class="text-gray-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed p-2" disabled>
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
+                    </svg>
+                </button>
+                <p id="week-display" class="text-xl text-gray-400">Loading...</p>
+                <button id="next-week-btn" class="text-gray-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed p-2" disabled>
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+                    </svg>
+                </button>
+            </div>
+            <button id="refresh-btn" class="mt-2 text-sm text-gray-500 hover:text-gray-300 underline hidden">
+                Refresh data
+            </button>
+        </header>
+
+        <main>
+            <!-- Loading State -->
+            <div id="loading" class="text-center py-12">
+                <div class="inline-block animate-spin rounded-full h-12 w-12 border-4 border-gray-600 border-t-green-400"></div>
+                <p class="text-gray-400 mt-4">Loading games...</p>
+            </div>
+
+            <!-- Spoiler-Free Section -->
+            <section id="watchable-section" class="mb-12 hidden">
+                <h2 class="text-2xl font-semibold text-green-400 mb-4 flex items-center gap-2">
+                    <span>🏈</span> Games Worth Watching
+                </h2>
+                <p class="text-gray-400 text-sm mb-4">Spoiler-free! Only team names and pre-game records shown.</p>
+                <div id="watchable-games" class="grid gap-4">
+                    <!-- Watchable games will be inserted here -->
+                </div>
+                <p id="no-watchable" class="text-gray-500 italic hidden">No standout games this week.</p>
+            </section>
+
+            <!-- Spoiler Zone -->
+            <section id="spoiler-section" class="hidden">
+                <button id="spoiler-toggle" class="w-full bg-gray-800 hover:bg-gray-700 border border-gray-600 rounded-lg p-4 mb-4 flex items-center justify-center gap-2 transition-colors">
+                    <span>⚠️</span>
+                    <span class="font-semibold text-red-400">Show Spoilers</span>
+                    <span class="text-gray-400 text-sm">(<span id="spoiler-count">0</span> other games)</span>
+                </button>
+                <div id="spoiler-content" class="hidden">
+                    <h2 class="text-2xl font-semibold text-red-400 mb-4 flex items-center gap-2">
+                        <span>⚠️</span> Spoiler Zone
+                    </h2>
+                    <p class="text-gray-400 text-sm mb-4">Full scores and results below.</p>
+                    <div id="spoiler-games" class="grid grid-cols-2 gap-4">
+                        <!-- All other games will be inserted here -->
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <footer class="text-center mt-12 text-gray-500 text-sm">
+            <p>Data from ESPN. Recommendations are spoiler-free.</p>
+        </footer>
+    </div>
+
+    <script>
+        // ============================================
+        // CONFIGURATION
+        // ============================================
+        const SCOREBOARD_URL = 'https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard';
+        const SUMMARY_URL = 'https://site.api.espn.com/apis/site/v2/sports/football/nfl/summary?event=';
+        const REQUEST_TIMEOUT_MS = 15000;
+
+        const CACHE_KEYS = {
+            SCOREBOARD: 'nfl_scoreboard_v2',
+            SUMMARY_PREFIX: 'nfl_summary_'
+        };
+
+        const CACHE_DURATIONS = {
+            FINAL: Infinity,
+            IN_PROGRESS: 5 * 60 * 1000,    // 5 minutes
+            SCHEDULED: 60 * 60 * 1000,     // 1 hour
+            SCOREBOARD_FINAL: 2 * 60 * 60 * 1000  // 2 hours - scoreboard should refresh to get new week
+        };
+
+        // Navigation state
+        let currentWeek = null;
+        let currentSeasonType = null;
+        let currentSeasonYear = null;
+        let latestWeek = null;
+        let latestSeasonType = null;
+        let latestSeasonYear = null;
+        const seasonCalendars = new Map();
+
+        // ============================================
+        // ESPN FETCH WRAPPER
+        // ============================================
+        async function fetchESPN(url) {
+            // ESPN's scoreboard and summary endpoints support browser CORS requests.
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+            try {
+                const response = await fetch(url, { signal: controller.signal });
+                if (!response.ok) {
+                    throw new Error(`ESPN request failed (HTTP ${response.status}). Please try again later.`);
+                }
+                try {
+                    return await response.json();
+                } catch (error) {
+                    if (controller.signal.aborted) throw error;
+                    throw new Error('ESPN returned an invalid JSON response. Please try again later.');
+                }
+            } catch (e) {
+                if (controller.signal.aborted) {
+                    throw new Error('ESPN request timed out. Please try again.');
+                }
+                if (e instanceof TypeError) {
+                    throw new Error('Unable to reach ESPN. Check your internet connection and try again.');
+                }
+                throw e;
+            } finally {
+                clearTimeout(timeout);
+            }
+        }
+
+        // ============================================
+        // CACHING UTILITIES
+        // ============================================
+        function getCachedData(key) {
+            try {
+                const cached = localStorage.getItem(key);
+                if (!cached) return null;
+
+                const { data, timestamp, duration } = JSON.parse(cached);
+                const now = Date.now();
+
+                if (duration === 'Infinity' || (now - timestamp) < duration) {
+                    return data;
+                }
+                localStorage.removeItem(key);
+                return null;
+            } catch (e) {
+                return null;
+            }
+        }
+
+        function setCachedData(key, data, duration) {
+            try {
+                const cacheEntry = {
+                    data,
+                    timestamp: Date.now(),
+                    duration: duration === Infinity ? 'Infinity' : duration
+                };
+                localStorage.setItem(key, JSON.stringify(cacheEntry));
+            } catch (e) {
+                // localStorage might be full or unavailable
+                console.warn('Cache write failed:', e);
+            }
+        }
+
+        function getCacheDuration(gameStatus) {
+            if (gameStatus === 'post') return CACHE_DURATIONS.FINAL;
+            if (gameStatus === 'in') return CACHE_DURATIONS.IN_PROGRESS;
+            return CACHE_DURATIONS.SCHEDULED;
+        }
+
+        // ============================================
+        // WEEK TIMING LOGIC
+        // ============================================
+        function shouldIncludeGame(gameDate) {
+            // Get current time in Berlin timezone
+            const now = new Date();
+            const berlinTime = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Berlin' }));
+            const dayOfWeek = berlinTime.getDay(); // 0 = Sunday, 1 = Monday, etc.
+            const hour = berlinTime.getHours();
+
+            // On Monday morning (before noon Berlin), include Sunday games
+            // On Tuesday morning (before noon Berlin), include Monday games
+            // This ensures SNF and MNF are included appropriately
+            return true; // Include all games from the current week's scoreboard
+        }
+
+        // ============================================
+        // DATA FETCHING
+        // ============================================
+        function getScoreboardCacheKey(week, seasonType, year) {
+            return `${CACHE_KEYS.SCOREBOARD}_${year}_${seasonType}_${week}`;
+        }
+
+        function isCompletedGame(game) {
+            const status = game.status?.type || game.competitions?.[0]?.status?.type;
+            return status?.state === 'post' && status.completed !== false;
+        }
+
+        function validateScoreboard(data) {
+            if (!data || !Array.isArray(data.events) || !Number.isInteger(data.season?.year)) {
+                throw new Error('ESPN returned an unexpected scoreboard response. Please try again later.');
+            }
+            const league = data.leagues?.find(league => league.calendar);
+            if (league?.season?.year === data.season.year) {
+                seasonCalendars.set(data.season.year, league.calendar);
+            }
+            return data;
+        }
+
+        function getScoreboardCacheDuration(data) {
+            if (data.events.some(e => e.status?.type?.state === 'in')) return CACHE_DURATIONS.IN_PROGRESS;
+            if (data.events.length > 0 && data.events.every(isCompletedGame)) return CACHE_DURATIONS.SCOREBOARD_FINAL;
+            return CACHE_DURATIONS.SCHEDULED;
+        }
+
+        function getLastWeek(seasonType, year) {
+            const entries = seasonCalendars.get(year)?.find(period => Number(period.value) === seasonType)?.entries;
+            if (entries?.length) return Math.max(...entries.map(entry => Number(entry.value)));
+            return seasonType === 3 ? 5 : (year >= 2021 ? 18 : 17);
+        }
+
+        async function fetchScoreboardForWeek(week, seasonType, year, forceRefresh = false) {
+            if (!Number.isInteger(week) || week < 1 || ![2, 3].includes(seasonType) || !Number.isInteger(year)) {
+                throw new Error('Unable to determine the NFL week to load. Please refresh and try again.');
+            }
+            const cacheKey = getScoreboardCacheKey(week, seasonType, year);
+            const cached = !forceRefresh && getCachedData(cacheKey);
+            if (cached) {
+                return validateScoreboard(cached);
+            }
+
+            // The default endpoint can contain only today's games. Always request the whole week.
+            const url = `${SCOREBOARD_URL}?week=${week}&seasontype=${seasonType}&dates=${year}&limit=1000`;
+            const data = validateScoreboard(await fetchESPN(url));
+            if (data.season.year !== year || data.season.type !== seasonType ||
+                (data.week?.number != null && data.week.number !== week)) {
+                throw new Error('ESPN returned a different NFL week than requested. Please try again later.');
+            }
+            data.week = { ...data.week, number: week };
+            data.season = { ...data.season, type: seasonType, year };
+            setCachedData(cacheKey, data, getScoreboardCacheDuration(data));
+            return data;
+        }
+
+        async function fetchScoreboard(forceRefresh = false) {
+            const cached = !forceRefresh && getCachedData(CACHE_KEYS.SCOREBOARD);
+            if (cached?.scoreboard && cached.latest) {
+                latestWeek = cached.latest.week;
+                latestSeasonType = cached.latest.seasonType;
+                latestSeasonYear = cached.latest.year;
+                return validateScoreboard(cached.scoreboard);
+            }
+
+            const current = validateScoreboard(await fetchESPN(SCOREBOARD_URL));
+            let period = {
+                week: current.week?.number,
+                seasonType: current.season.type,
+                year: current.season.year
+            };
+            // The app covers regular season and postseason, including during the offseason.
+            if (period.seasonType === 1) {
+                period = getPreviousWeek(1, 2, period.year);
+            } else if (period.seasonType === 4) {
+                period = { week: getLastWeek(3, period.year), seasonType: 3, year: period.year };
+            }
+
+            // Store the latest week info (for navigation boundaries)
+            latestWeek = period.week;
+            latestSeasonType = period.seasonType;
+            latestSeasonYear = period.year;
+
+            // Use the same season transitions as navigation, including the previous season.
+            for (let attempts = 0; attempts < 6; attempts++) {
+                const data = await fetchScoreboardForWeek(period.week, period.seasonType, period.year, forceRefresh);
+                if (data.events.some(isCompletedGame)) {
+                    setCachedData(CACHE_KEYS.SCOREBOARD, {
+                        scoreboard: data,
+                        latest: { week: latestWeek, seasonType: latestSeasonType, year: latestSeasonYear }
+                    }, CACHE_DURATIONS.IN_PROGRESS);
+                    return data;
+                }
+                period = getPreviousWeek(period.week, period.seasonType, period.year);
+            }
+            throw new Error('No completed NFL games were found in the recent weeks. Please try another week.');
+        }
+
+        // Navigate to previous week
+        function getPreviousWeek(week, seasonType, year) {
+            let newWeek = week - 1;
+            let newSeasonType = seasonType;
+            let newYear = year;
+
+            if (newWeek < 1) {
+                if (seasonType === 3) {
+                    // From playoffs week 1 -> last regular season week
+                    newSeasonType = 2;
+                    newWeek = getLastWeek(2, year);
+                } else if (seasonType === 2) {
+                    // From regular season week 1 -> previous year's playoffs (Super Bowl)
+                    newSeasonType = 3;
+                    newYear = year - 1;
+                    newWeek = getLastWeek(3, newYear);
+                }
+            }
+
+            return { week: newWeek, seasonType: newSeasonType, year: newYear };
+        }
+
+        // Navigate to next week
+        function getNextWeek(week, seasonType, year) {
+            let newWeek = week + 1;
+            let newSeasonType = seasonType;
+            let newYear = year;
+
+            if (seasonType === 2 && newWeek > getLastWeek(2, year)) {
+                // From regular season week 18 -> playoffs week 1
+                newSeasonType = 3;
+                newWeek = 1;
+            } else if (seasonType === 3 && newWeek > getLastWeek(3, year)) {
+                // From Super Bowl -> next year's regular season week 1
+                newSeasonType = 2;
+                newWeek = 1;
+                newYear = year + 1;
+            }
+
+            return { week: newWeek, seasonType: newSeasonType, year: newYear };
+        }
+
+        function isAtLatestWeek() {
+            return currentWeek === latestWeek &&
+                   currentSeasonType === latestSeasonType &&
+                   currentSeasonYear === latestSeasonYear;
+        }
+
+        function updateNavigationButtons() {
+            const prevBtn = document.getElementById('prev-week-btn');
+            const nextBtn = document.getElementById('next-week-btn');
+
+            // Enable prev button (we can always go back in history)
+            prevBtn.disabled = false;
+
+            // Disable next button if we're at the latest week
+            nextBtn.disabled = isAtLatestWeek();
+        }
+
+        async function fetchGameSummary(gameId, forceRefresh = false) {
+            const cacheKey = CACHE_KEYS.SUMMARY_PREFIX + gameId;
+            const cached = !forceRefresh && getCachedData(cacheKey);
+            if (cached) {
+                return cached;
+            }
+
+            const data = await fetchESPN(SUMMARY_URL + encodeURIComponent(gameId));
+            if (!data?.header?.competitions?.length) {
+                throw new Error('ESPN returned an unexpected game summary response. Please try again later.');
+            }
+
+            const gameStatus = data.header?.competitions?.[0]?.status?.type?.state || 'pre';
+            const duration = getCacheDuration(gameStatus);
+
+            setCachedData(cacheKey, data, duration);
+            return data;
+        }
+
+        // ============================================
+        // GAME ANALYSIS
+        // ============================================
+        function shouldFetchSummary(game) {
+            const competition = game.competitions?.[0];
+            if (!competition) return false;
+
+            const homeScore = parseInt(competition.competitors?.find(c => c.homeAway === 'home')?.score || 0);
+            const awayScore = parseInt(competition.competitors?.find(c => c.homeAway === 'away')?.score || 0);
+            const differential = Math.abs(homeScore - awayScore);
+            const isPlayoff = game.season?.type > 2; // Regular season is type 2
+
+            // Only fetch summary for potential thrillers
+            if (isPlayoff) return true;
+            if (homeScore >= 15 && awayScore >= 15) return true;
+            if (differential <= 15) return true;
+
+            return false;
+        }
+
+        function getPlaysFromSummary(summary) {
+            // ESPN API can have drives in different locations
+            // Try drives.previous first (common structure), then drives directly
+            let drives = summary.drives?.previous || summary.drives;
+
+            // If drives is an object with numbered keys, convert to array
+            if (drives && !Array.isArray(drives)) {
+                drives = Object.values(drives).filter(d => d && typeof d === 'object');
+            }
+
+            if (!Array.isArray(drives)) return [];
+
+            return drives.flatMap(d => d.plays || []);
+        }
+
+        function countLeadChanges(summary) {
+            const plays = getPlaysFromSummary(summary);
+            let leadChanges = 0;
+            let previousLeader = null;
+
+            for (const play of plays) {
+                const homeScore = play.homeScore || 0;
+                const awayScore = play.awayScore || 0;
+
+                let currentLeader = null;
+                if (homeScore > awayScore) currentLeader = 'home';
+                else if (awayScore > homeScore) currentLeader = 'away';
+
+                if (currentLeader && previousLeader && currentLeader !== previousLeader) {
+                    leadChanges++;
+                }
+
+                if (currentLeader) previousLeader = currentLeader;
+            }
+
+            return leadChanges;
+        }
+
+        function detectComeback(summary, finalHomeScore, finalAwayScore) {
+            // Returns { comeback: bool, strongComeback: bool }
+            // Comeback: Was down 15+ in 2nd half, then later tied or took the lead
+            // Strong Comeback: Was down 8+ in Q4/OT, then later tied or took the lead
+            const plays = getPlaysFromSummary(summary);
+
+            let homeWasDown15 = false;  // Home was down 15+ at some point in 2nd half
+            let awayWasDown15 = false;  // Away was down 15+ at some point in 2nd half
+            let homeErasedAfter15 = false;  // Home tied/led after being down 15+
+            let awayErasedAfter15 = false;  // Away tied/led after being down 15+
+
+            let homeWasDown8Q4 = false;  // Home was down 8+ at some point in Q4/OT
+            let awayWasDown8Q4 = false;  // Away was down 8+ at some point in Q4/OT
+            let homeErasedAfter8Q4 = false;  // Home tied/led after being down 8+ in Q4
+            let awayErasedAfter8Q4 = false;  // Away tied/led after being down 8+ in Q4
+
+            for (const play of plays) {
+                const period = play.period?.number || 0;
+                if (period < 3) continue; // Only Q3, Q4, OT
+
+                const homeScore = play.homeScore || 0;
+                const awayScore = play.awayScore || 0;
+                const diff = homeScore - awayScore; // positive = home leads
+
+                // Track 15+ deficits in 2nd half
+                if (diff <= -15) {
+                    homeWasDown15 = true;
+                }
+                if (diff >= 15) {
+                    awayWasDown15 = true;
+                }
+
+                // Check if deficit was erased (tied or took lead) after being down 15+
+                if (homeWasDown15 && diff >= 0) {
+                    homeErasedAfter15 = true;
+                }
+                if (awayWasDown15 && diff <= 0) {
+                    awayErasedAfter15 = true;
+                }
+
+                // Track 8+ deficits in Q4/OT
+                if (period >= 4) {
+                    if (diff <= -8) {
+                        homeWasDown8Q4 = true;
+                    }
+                    if (diff >= 8) {
+                        awayWasDown8Q4 = true;
+                    }
+
+                    // Check if deficit was erased after being down 8+ in Q4
+                    if (homeWasDown8Q4 && diff >= 0) {
+                        homeErasedAfter8Q4 = true;
+                    }
+                    if (awayWasDown8Q4 && diff <= 0) {
+                        awayErasedAfter8Q4 = true;
+                    }
+                }
+            }
+
+            const comeback = homeErasedAfter15 || awayErasedAfter15;
+            const strongComeback = homeErasedAfter8Q4 || awayErasedAfter8Q4;
+
+            return { comeback, strongComeback };
+        }
+
+        function isOvertimeGame(game) {
+            const competition = game.competitions?.[0];
+            const homeTeam = competition?.competitors?.find(c => c.homeAway === 'home');
+            const awayTeam = competition?.competitors?.find(c => c.homeAway === 'away');
+            const homeLinescores = homeTeam?.linescores || [];
+            // Regular game has 4 quarters; more than 4 means OT
+            return homeLinescores.length > 4;
+        }
+
+        function isOvertimeTie(game) {
+            const competition = game.competitions?.[0];
+            const homeTeam = competition?.competitors?.find(c => c.homeAway === 'home');
+            const awayTeam = competition?.competitors?.find(c => c.homeAway === 'away');
+            const homeScore = parseInt(homeTeam?.score || 0);
+            const awayScore = parseInt(awayTeam?.score || 0);
+            return isOvertimeGame(game) && homeScore === awayScore;
+        }
+
+        function detectLateLeadChange(summary) {
+            // Check if the last scoring play in Q4 was a lead change
+            const plays = getPlaysFromSummary(summary);
+
+            // Find all scoring plays in Q4 (period 4)
+            const q4ScoringPlays = [];
+            let prevHomeScore = 0;
+            let prevAwayScore = 0;
+
+            for (const play of plays) {
+                const period = play.period?.number || 0;
+                const homeScore = play.homeScore || 0;
+                const awayScore = play.awayScore || 0;
+
+                // Track score changes in Q4
+                if (period === 4 && (homeScore !== prevHomeScore || awayScore !== prevAwayScore)) {
+                    const prevLeader = prevHomeScore > prevAwayScore ? 'home' :
+                                       prevAwayScore > prevHomeScore ? 'away' : 'tie';
+                    const newLeader = homeScore > awayScore ? 'home' :
+                                      awayScore > homeScore ? 'away' : 'tie';
+
+                    q4ScoringPlays.push({
+                        prevLeader,
+                        newLeader,
+                        prevHomeScore,
+                        prevAwayScore,
+                        homeScore,
+                        awayScore
+                    });
+                }
+
+                prevHomeScore = homeScore;
+                prevAwayScore = awayScore;
+            }
+
+            if (q4ScoringPlays.length === 0) return false;
+
+            // Check the last scoring play in Q4
+            const lastPlay = q4ScoringPlays[q4ScoringPlays.length - 1];
+
+            // Debug logging
+            console.log('Q4 scoring plays:', q4ScoringPlays);
+            console.log('Last play:', lastPlay);
+
+            // Lead change: previous leader was one team, new leader is the other
+            return lastPlay.prevLeader !== 'tie' &&
+                   lastPlay.newLeader !== 'tie' &&
+                   lastPlay.prevLeader !== lastPlay.newLeader;
+        }
+
+        function getPreGameRecordDifferential(competitor, isWinner, isTie) {
+            // Parse record like "10-5" or "7-8-1" and return pre-game (wins - losses)
+            const record = competitor.records?.find(r => r.type === 'total')?.summary || '0-0';
+            const parts = record.split('-').map(Number);
+            let [wins, losses] = parts;
+
+            // Adjust to pre-game record
+            if (isTie) {
+                // No adjustment needed for wins/losses differential
+            } else if (isWinner) {
+                wins = Math.max(0, wins - 1);
+            } else {
+                losses = Math.max(0, losses - 1);
+            }
+
+            return wins - losses;
+        }
+
+        function getPreGameRecord(competitor, isWinner, isTie) {
+            const record = competitor.records?.find(r => r.type === 'total')?.summary || '0-0';
+            const parts = record.split('-').map(Number);
+            let [wins, losses, ties] = parts;
+            ties = ties || 0;
+
+            if (isTie) {
+                // Game was a tie, subtract from ties
+                return ties > 0 ? `${wins}-${losses}-${ties - 1}` : `${wins}-${losses}`;
+            } else if (isWinner) {
+                // Subtract 1 from wins for the winner
+                const newWins = Math.max(0, wins - 1);
+                return ties > 0 ? `${newWins}-${losses}-${ties}` : `${newWins}-${losses}`;
+            } else {
+                // Subtract 1 from losses for the loser
+                const newLosses = Math.max(0, losses - 1);
+                return ties > 0 ? `${wins}-${newLosses}-${ties}` : `${wins}-${newLosses}`;
+            }
+        }
+
+        // ============================================
+        // RECOMMENDATION CRITERIA (Points-based system)
+        // ============================================
+        function evaluateGame(game, summary) {
+            const competition = game.competitions?.[0];
+            if (!competition) return { watchable: false, points: 0, reasons: [] };
+
+            const homeTeam = competition.competitors?.find(c => c.homeAway === 'home');
+            const awayTeam = competition.competitors?.find(c => c.homeAway === 'away');
+
+            const homeScore = parseInt(homeTeam?.score || 0);
+            const awayScore = parseInt(awayTeam?.score || 0);
+            const differential = Math.abs(homeScore - awayScore);
+            const combined = homeScore + awayScore;
+
+            let points = 0;
+            const reasons = [];
+
+            // Close Games: Differential ≤ 8 points gives +1
+            if (differential <= 8) {
+                points += 1;
+                reasons.push('close');
+            }
+
+            // Very Close Games: Differential ≤ 2 points gives bonus +1
+            if (differential <= 2) {
+                points += 1;
+                reasons.push('very-close');
+            }
+
+            // Decided in Overtime: Game goes into overtime and doesn't end in a draw gives +1
+            if (isOvertimeGame(game) && !isOvertimeTie(game)) {
+                points += 1;
+                reasons.push('overtime');
+            }
+
+            // Comebacks and Strong Comebacks (need summary)
+            if (summary) {
+                const comebackResult = detectComeback(summary, homeScore, awayScore);
+
+                // Comebacks: Recovery from 15+ point deficit in 2nd half gives +1
+                if (comebackResult.comeback) {
+                    points += 1;
+                    reasons.push('comeback');
+                }
+
+                // Strong Comebacks: Recovery from 8+ point deficit in Q4 gives bonus +1
+                if (comebackResult.strongComeback) {
+                    points += 1;
+                    reasons.push('strong-comeback');
+                }
+            }
+
+            // Shootouts: Combined score 55+ with differential ≤ 10 gives +1
+            if (combined >= 55 && differential <= 10) {
+                points += 1;
+                reasons.push('shootout');
+            }
+
+            // Super Shootouts: Combined score 64+ with differential ≤ 10 gives bonus +1
+            if (combined >= 64 && differential <= 10) {
+                points += 1;
+                reasons.push('super-shootout');
+            }
+
+            // Lead change criteria (need summary)
+            if (summary) {
+                const leadChanges = countLeadChanges(summary);
+
+                // Late Lead Changes: Last score in Q4 being a lead change gives +1
+                if (detectLateLeadChange(summary)) {
+                    points += 1;
+                    reasons.push('late-lead-change');
+                }
+
+                // Total Lead Changes: 5+ lead changes gives +1
+                if (leadChanges >= 5) {
+                    points += 1;
+                    reasons.push('lead-changes');
+                }
+
+                // Many Total Lead Changes: 7+ lead changes gives bonus +1
+                if (leadChanges >= 7) {
+                    points += 1;
+                    reasons.push('many-lead-changes');
+                }
+
+                // Record Number Total Lead Changes: 10+ lead changes gives bonus +1
+                if (leadChanges >= 10) {
+                    points += 1;
+                    reasons.push('record-lead-changes');
+                }
+            }
+
+            // Playoff Teams involved: Both teams with pre-game record differential ≥ +2 gives +1
+            const isTie = homeScore === awayScore;
+            const homeWon = homeScore > awayScore;
+            const homeRecordDiff = getPreGameRecordDifferential(homeTeam, homeWon, isTie);
+            const awayRecordDiff = getPreGameRecordDifferential(awayTeam, !homeWon && !isTie, isTie);
+
+            if (homeRecordDiff >= 2 && awayRecordDiff >= 2) {
+                points += 1;
+                reasons.push('playoff-teams');
+            }
+
+            // Losing Teams involved: Both teams with pre-game record differential ≤ -4 gives -1
+            if (homeRecordDiff <= -4 && awayRecordDiff <= -4) {
+                points -= 1;
+                reasons.push('losing-teams');
+            }
+
+            return {
+                watchable: points >= 3,  // 3+ points = recommended
+                points,
+                reasons
+            };
+        }
+
+        // ============================================
+        // UI RENDERING
+        // ============================================
+        function getTeamLogo(team) {
+            return team?.team?.logo || '';
+        }
+
+        function getTeamAbbreviation(team) {
+            return team?.team?.abbreviation || 'TBD';
+        }
+
+        function getTeamName(team) {
+            return team?.team?.displayName || 'TBD';
+        }
+
+        function renderWatchableGame(game, evaluation, homeRecord, awayRecord) {
+            const competition = game.competitions?.[0];
+            const homeTeam = competition?.competitors?.find(c => c.homeAway === 'home');
+            const awayTeam = competition?.competitors?.find(c => c.homeAway === 'away');
+
+            // Star ratings:
+            // - 3 stars for games with 5+ points
+            // - 1 star for highest scoring game(s) (unless already 5+, then 3 stars)
+            let stars = '';
+            if (evaluation.points >= 5) {
+                stars = '⭐⭐⭐';
+            } else if (evaluation.isTopGame) {
+                stars = '⭐';
+            }
+
+            const gameDate = new Date(game.date || competition?.date);
+            const formattedDate = gameDate.toLocaleDateString('en-US', {
+                weekday: 'short',
+                month: 'short',
+                day: 'numeric'
+            });
+
+            return `
+                <div class="game-card bg-gray-800 rounded-lg p-4 border border-gray-700 hover:border-green-500">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center gap-3 flex-1">
+                            <img src="${getTeamLogo(awayTeam)}" alt="${getTeamAbbreviation(awayTeam)}" class="w-10 h-10 object-contain">
+                            <div>
+                                <p class="font-semibold">${getTeamName(awayTeam)}</p>
+                                <p class="text-gray-400 text-sm">${awayRecord}</p>
+                            </div>
+                        </div>
+                        <div class="flex flex-col items-center px-4">
+                            <div class="text-yellow-400 text-sm h-5">${stars}</div>
+                            <div class="text-gray-500 text-xl font-bold">@</div>
+                            <div class="text-gray-500 text-xs">${formattedDate}</div>
+                        </div>
+                        <div class="flex items-center gap-3 flex-1 justify-end">
+                            <div class="text-right">
+                                <p class="font-semibold">${getTeamName(homeTeam)}</p>
+                                <p class="text-gray-400 text-sm">${homeRecord}</p>
+                            </div>
+                            <img src="${getTeamLogo(homeTeam)}" alt="${getTeamAbbreviation(homeTeam)}" class="w-10 h-10 object-contain">
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderSpoilerGame(game) {
+            const competition = game.competitions?.[0];
+            const homeTeam = competition?.competitors?.find(c => c.homeAway === 'home');
+            const awayTeam = competition?.competitors?.find(c => c.homeAway === 'away');
+
+            const homeScore = homeTeam?.score || '0';
+            const awayScore = awayTeam?.score || '0';
+
+            const status = game.status?.type?.shortDetail || 'Final';
+
+            // Get linescores for quarter-by-quarter
+            const homeLinescores = homeTeam?.linescores || [];
+            const awayLinescores = awayTeam?.linescores || [];
+
+            let quarterScores = '';
+            if (homeLinescores.length > 0) {
+                const quarters = homeLinescores.map((_, i) => `Q${i + 1}`).join('</th><th class="px-2">');
+                const awayQuarters = awayLinescores.map(q => q.value || 0).join('</td><td class="px-2 text-center">');
+                const homeQuarters = homeLinescores.map(q => q.value || 0).join('</td><td class="px-2 text-center">');
+
+                quarterScores = `
+                    <table class="text-xs text-gray-400 mt-2 mx-auto">
+                        <thead>
+                            <tr>
+                                <th class="text-left pr-4">Team</th>
+                                <th class="px-2">${quarters}</th>
+                                <th class="px-2 text-yellow-400">F</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td class="pr-4">${getTeamAbbreviation(awayTeam)}</td>
+                                <td class="px-2 text-center">${awayQuarters}</td>
+                                <td class="px-2 text-center font-bold">${awayScore}</td>
+                            </tr>
+                            <tr>
+                                <td class="pr-4">${getTeamAbbreviation(homeTeam)}</td>
+                                <td class="px-2 text-center">${homeQuarters}</td>
+                                <td class="px-2 text-center font-bold">${homeScore}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                `;
+            }
+
+            return `
+                <div class="game-card bg-gray-800 rounded-lg p-4 border border-gray-700">
+                    <div class="flex items-center justify-between mb-2">
+                        <div class="flex items-center gap-3 flex-1">
+                            <img src="${getTeamLogo(awayTeam)}" alt="${getTeamAbbreviation(awayTeam)}" class="w-8 h-8 object-contain">
+                            <span class="font-semibold">${getTeamAbbreviation(awayTeam)}</span>
+                        </div>
+                        <div class="text-2xl font-bold px-4">${awayScore} - ${homeScore}</div>
+                        <div class="flex items-center gap-3 flex-1 justify-end">
+                            <span class="font-semibold">${getTeamAbbreviation(homeTeam)}</span>
+                            <img src="${getTeamLogo(homeTeam)}" alt="${getTeamAbbreviation(homeTeam)}" class="w-8 h-8 object-contain">
+                        </div>
+                    </div>
+                    <div class="text-center text-sm text-gray-400">${status}</div>
+                    ${quarterScores}
+                </div>
+            `;
+        }
+
+        // ============================================
+        // MAIN APPLICATION
+        // ============================================
+        async function loadGames(explicitWeek = null, explicitSeasonType = null, explicitYear = null, forceRefresh = false) {
+            const watchableContainer = document.getElementById('watchable-games');
+            const spoilerContainer = document.getElementById('spoiler-games');
+            const weekDisplay = document.getElementById('week-display');
+            const noWatchable = document.getElementById('no-watchable');
+            const loading = document.getElementById('loading');
+            const watchableSection = document.getElementById('watchable-section');
+            const spoilerSection = document.getElementById('spoiler-section');
+            const refreshBtn = document.getElementById('refresh-btn');
+
+            // Show loading state and reset UI
+            refreshBtn.disabled = true;
+            document.getElementById('prev-week-btn').disabled = true;
+            document.getElementById('next-week-btn').disabled = true;
+            loading.classList.remove('hidden');
+            watchableSection.classList.add('hidden');
+            spoilerSection.classList.add('hidden');
+
+            // Reset spoiler toggle state
+            const spoilerContent = document.getElementById('spoiler-content');
+            const spoilerToggle = document.getElementById('spoiler-toggle');
+            spoilerContent.classList.add('hidden');
+            spoilerToggle.querySelector('.font-semibold').textContent = 'Show Spoilers';
+
+            try {
+                let scoreboard;
+
+                if (explicitWeek !== null) {
+                    // Load specific week
+                    scoreboard = await fetchScoreboardForWeek(explicitWeek, explicitSeasonType, explicitYear, forceRefresh);
+                } else {
+                    // Auto-detect latest week with completed games
+                    scoreboard = await fetchScoreboard(forceRefresh);
+                }
+
+                // Display week info
+                const week = scoreboard.week?.number || '';
+                const seasonType = scoreboard.season?.type || 2;
+                const seasonYear = scoreboard.season?.year || '';
+
+                // Update current navigation state
+                currentWeek = week;
+                currentSeasonType = seasonType;
+                currentSeasonYear = seasonYear;
+
+                // If this is initial load, set latest week info
+                if (latestWeek === null) {
+                    latestWeek = week;
+                    latestSeasonType = seasonType;
+                    latestSeasonYear = seasonYear;
+                }
+
+                let weekLabel = `Week ${week}`;
+
+                if (seasonType === 3) {
+                    // Playoffs - week 1 = Wild Card, 2 = Divisional, 3 = Conference, 4/5 = Super Bowl
+                    const playoffRounds = {
+                        1: 'Wild Card Round',
+                        2: 'Divisional Round',
+                        3: 'Conference Championships',
+                        4: 'Super Bowl',
+                        5: 'Super Bowl'
+                    };
+                    weekLabel = playoffRounds[week] || `Playoffs Week ${week}`;
+                } else if (seasonType === 4) {
+                    weekLabel = 'Pro Bowl';
+                } else if (seasonType === 5) {
+                    weekLabel = 'Super Bowl';
+                }
+
+                // Add season year if available
+                if (seasonYear) {
+                    weekLabel = `${seasonYear} ${weekLabel}`;
+                }
+
+                weekDisplay.textContent = weekLabel;
+
+                // Filter to completed games
+                const completedGames = scoreboard.events.filter(isCompletedGame);
+
+                if (completedGames.length === 0) {
+                    weekDisplay.textContent += ' - No completed games';
+                    loading.classList.add('hidden');
+                    watchableSection.classList.remove('hidden');
+                    noWatchable.classList.remove('hidden');
+                    watchableContainer.innerHTML = '';
+                    spoilerContainer.innerHTML = '';
+                    document.getElementById('refresh-btn').classList.remove('hidden');
+                    updateNavigationButtons();
+                    return;
+                }
+
+                // Analyze each game
+                const gameAnalysis = [];
+
+                for (const game of completedGames) {
+                    let summary = null;
+                    if (shouldFetchSummary(game)) {
+                        try {
+                            summary = await fetchGameSummary(game.id, forceRefresh);
+                        } catch (e) {
+                            console.warn(`Failed to fetch summary for game ${game.id}:`, e);
+                        }
+                    }
+
+                    const evaluation = evaluateGame(game, summary);
+
+                    // Debug logging
+                    const comp = game.competitions?.[0];
+                    const hTeam = comp?.competitors?.find(c => c.homeAway === 'home');
+                    const aTeam = comp?.competitors?.find(c => c.homeAway === 'away');
+                    console.log(`${aTeam?.team?.abbreviation} @ ${hTeam?.team?.abbreviation}: ${evaluation.points} points`, evaluation.reasons);
+
+                    // Calculate pre-game records
+                    const competition = game.competitions?.[0];
+                    const homeTeam = competition?.competitors?.find(c => c.homeAway === 'home');
+                    const awayTeam = competition?.competitors?.find(c => c.homeAway === 'away');
+                    const homeScore = parseInt(homeTeam?.score || 0);
+                    const awayScore = parseInt(awayTeam?.score || 0);
+                    const homeWon = homeScore > awayScore;
+                    const isTie = homeScore === awayScore;
+
+                    const homeRecord = getPreGameRecord(homeTeam, homeWon, isTie);
+                    const awayRecord = getPreGameRecord(awayTeam, !homeWon && !isTie, isTie);
+
+                    gameAnalysis.push({
+                        game,
+                        summary,
+                        evaluation,
+                        homeRecord,
+                        awayRecord
+                    });
+                }
+
+                // Find max points for top game assignment (3 stars)
+                const maxPoints = Math.max(...gameAnalysis.map(g => g.evaluation.points));
+
+                // Separate watchable and non-watchable games
+                const watchableGames = gameAnalysis.filter(g => g.evaluation.watchable);
+                const otherGames = gameAnalysis.filter(g => !g.evaluation.watchable);
+
+                // Mark top games with 3 stars (highest points, must be watchable)
+                watchableGames.forEach(g => {
+                    g.evaluation.isTopGame = g.evaluation.points === maxPoints && maxPoints >= 2;
+                });
+
+                // Render watchable games (sorted by points, descending)
+                if (watchableGames.length > 0) {
+                    watchableContainer.innerHTML = watchableGames
+                        .sort((a, b) => b.evaluation.points - a.evaluation.points)
+                        .map(g => renderWatchableGame(g.game, g.evaluation, g.homeRecord, g.awayRecord))
+                        .join('');
+                    noWatchable.classList.add('hidden');
+                } else {
+                    watchableContainer.innerHTML = '';
+                    noWatchable.classList.remove('hidden');
+                }
+
+                // Render spoiler games
+                spoilerContainer.innerHTML = otherGames
+                    .map(g => renderSpoilerGame(g.game))
+                    .join('');
+
+                // Update spoiler count
+                document.getElementById('spoiler-count').textContent = otherGames.length;
+
+                // Hide loading, show sections
+                loading.classList.add('hidden');
+                watchableSection.classList.remove('hidden');
+                document.getElementById('refresh-btn').classList.remove('hidden');
+                if (otherGames.length > 0) {
+                    spoilerSection.classList.remove('hidden');
+                }
+
+                // Update navigation buttons
+                updateNavigationButtons();
+
+            } catch (error) {
+                console.error('Failed to load games:', error);
+                loading.classList.add('hidden');
+                watchableSection.classList.remove('hidden');
+                document.getElementById('refresh-btn').classList.remove('hidden');
+                weekDisplay.textContent = 'Error loading data';
+                watchableContainer.innerHTML = `
+                    <div class="bg-red-900/50 border border-red-500 rounded-lg p-4 text-center">
+                        <p class="text-red-300">Failed to load game data. Please try again later.</p>
+                        <p class="text-red-400 text-sm mt-2">${error.message}</p>
+                    </div>
+                `;
+                // Still enable navigation to try other weeks
+                if (currentWeek !== null) {
+                    updateNavigationButtons();
+                }
+            } finally {
+                refreshBtn.disabled = false;
+            }
+        }
+
+        // Spoiler toggle functionality
+        function setupSpoilerToggle() {
+            const toggle = document.getElementById('spoiler-toggle');
+            const content = document.getElementById('spoiler-content');
+
+            toggle.addEventListener('click', () => {
+                const isHidden = content.classList.contains('hidden');
+                content.classList.toggle('hidden');
+                toggle.querySelector('.font-semibold').textContent = isHidden ? 'Hide Spoilers' : 'Show Spoilers';
+            });
+        }
+
+        // Refresh button functionality
+        function setupRefreshButton() {
+            const refreshBtn = document.getElementById('refresh-btn');
+            refreshBtn.addEventListener('click', () => {
+                try {
+                    localStorage.removeItem(CACHE_KEYS.SCOREBOARD);
+                } catch (e) {
+                    // Refresh also works when browser storage is unavailable.
+                }
+                // At the latest week, also detect a newly started week. Preserve historical selections.
+                if (currentWeek === null || isAtLatestWeek()) {
+                    return loadGames(null, null, null, true);
+                } else {
+                    return loadGames(currentWeek, currentSeasonType, currentSeasonYear, true);
+                }
+            });
+        }
+
+        // Navigation button functionality
+        function setupNavigationButtons() {
+            const prevBtn = document.getElementById('prev-week-btn');
+            const nextBtn = document.getElementById('next-week-btn');
+
+            prevBtn.addEventListener('click', () => {
+                if (currentWeek === null) return;
+
+                const prev = getPreviousWeek(currentWeek, currentSeasonType, currentSeasonYear);
+                loadGames(prev.week, prev.seasonType, prev.year);
+            });
+
+            nextBtn.addEventListener('click', () => {
+                if (currentWeek === null || isAtLatestWeek()) return;
+
+                const next = getNextWeek(currentWeek, currentSeasonType, currentSeasonYear);
+                loadGames(next.week, next.seasonType, next.year);
+            });
+        }
+
+        // Initialize on page load
+        document.addEventListener('DOMContentLoaded', () => {
+            setupSpoilerToggle();
+            setupRefreshButton();
+            setupNavigationButtons();
+            loadGames();
+        });
+    </script>
+</body>
+</html>
