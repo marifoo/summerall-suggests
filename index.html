@@ -96,7 +96,7 @@
 /* Pure ESPN normalization, fact extraction, scoring, and ranking. No I/O or UI. */
 (function (root) {
     'use strict';
-    const EXTRACTION_VERSION = 1;
+    const EXTRACTION_VERSION = 2;
     const RULES_VERSION = 1;
     const POLICY = Object.freeze({ recommendation: 3, threeStars: 5 });
     const number = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)) ? Number(value) : null;
@@ -105,7 +105,7 @@
     // every property is allowlisted, so raw ESPN payloads cannot escape this boundary.
     function normalizeGame(game) {
         const comp = game.competitions?.[0];
-        const status = game.status || comp?.status;
+        const status = game.status?.type ? game.status : comp?.status;
         const normalizeStatus = value => ({ type: {
             state: value?.type?.state ?? null,
             completed: value?.type?.completed ?? null,

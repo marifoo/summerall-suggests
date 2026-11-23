@@ -153,6 +153,7 @@ owns request sharing, week loading, navigation, and rendering.
 Unavailable scores, records, linescores, and play history are `null`, rather than
 fabricated zeros or false values. Rules lacking required data award zero points and
 explain why they are inapplicable. Scheduled/live/cancelled games cannot qualify.
+Normalization falls back to competition status when event status omits its type.
 This explicitly handles absent facts; valid-data scoring follows the characterized
 implementation. Empty or incomplete play history cannot establish a negative fact.
 
