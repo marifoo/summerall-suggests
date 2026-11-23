@@ -188,6 +188,25 @@
             comebackFacts: periodsKnown ? comebackFacts : null, unavailable: periodsKnown ? null : 'Play periods unavailable' };
     }
 
+    // Cached facts cross the same domain boundary as freshly extracted facts.
+    function isPlayMetrics(value) {
+        if (!value || typeof value !== 'object') return false;
+        const count = value => Number.isInteger(value) && value >= 0;
+        const nullableCount = value => value === null || count(value);
+        if (!['leadChanges', 'erasedDeficitSecondHalf', 'erasedDeficitFourthQuarter'].every(key => nullableCount(value[key])) ||
+            !(value.lateLeadChange === null || typeof value.lateLeadChange === 'boolean') ||
+            !(value.unavailable === null || typeof value.unavailable === 'string')) return false;
+        if (value.comebackFacts !== null && !['home', 'away'].every(side =>
+            ['secondHalfDeficit', 'fourthQuarterDeficit', 'erasedSecondHalfDeficit', 'erasedFourthQuarterDeficit']
+                .every(key => count(value.comebackFacts?.[side]?.[key])))) return false;
+        if (value.lastQ4Score !== null) {
+            const last = value.lastQ4Score;
+            if (!last || !['home', 'away', 'tie'].includes(last.previousLeader) || !['home', 'away', 'tie'].includes(last.newLeader) ||
+                !['before', 'after'].every(when => ['home', 'away'].every(side => count(last[when]?.[side])))) return false;
+        }
+        return true;
+    }
+
     function preGameRecord(team, won, tie) {
         const record = team?.records?.find(record => record.type === 'total')?.summary;
         if (typeof record !== 'string' || !/^\d+-\d+(?:-\d+)?$/.test(record)) return { display: null, differential: null };
@@ -266,7 +285,7 @@
             } };
         }).sort((a, b) => Number(b.metrics.completed) - Number(a.metrics.completed) || b.evaluation.points - a.evaluation.points);
     }
-    const api = { EXTRACTION_VERSION, RULES_VERSION, normalizeGame, normalizeScoreboard, extractPlayMetrics, extractMetrics, evaluate, rankWeek, preGameRecord };
+    const api = { EXTRACTION_VERSION, RULES_VERSION, normalizeGame, normalizeScoreboard, extractPlayMetrics, isPlayMetrics, extractMetrics, evaluate, rankWeek, preGameRecord };
     if (typeof module !== 'undefined' && module.exports) module.exports = api;
     else root.Watchability = api;
 })(globalThis);
@@ -441,6 +460,13 @@
         const getCachedData = key => persistentCache.get(key);
         const setCachedData = (key, data, duration) => persistentCache.set(key, data, duration);
 
+        function getValidCachedData(key, validate) {
+            const cached = getCachedData(key);
+            if (cached === null) return null;
+            try { return validate(cached); }
+            catch { persistentCache.remove(key); return null; }
+        }
+
         function getCacheDuration(gameStatus) {
             if (gameStatus === 'post') return CACHE_DURATIONS.FINAL;
             if (gameStatus === 'in') return CACHE_DURATIONS.IN_PROGRESS;
@@ -459,16 +485,16 @@
         const fetchCachedESPN = (() => {
             const pending = new Map();
             let epoch = 0;
-            const fetch = async function(key, load, getDuration, forceRefresh) {
+            const fetch = async function(key, load, getDuration, forceRefresh, validate = data => data) {
                 if (!forceRefresh) {
                     if (pending.has(key)) return pending.get(key).promise;
-                    const cached = getCachedData(key);
-                    if (cached) return cached;
+                    const cached = getValidCachedData(key, validate);
+                    if (cached !== null) return cached;
                 }
                 const request = {};
                 pending.set(key, request);
                 request.promise = (async () => {
-                    const data = await load();
+                    const data = validate(await load());
                     if (pending.get(key) === request) setCachedData(key, data, getDuration(data));
                     return data;
                 })().finally(() => {
@@ -509,12 +535,32 @@
             return seasonType === 3 ? 5 : (year >= 2021 ? 18 : 17);
         }
 
+        function isSupportedPeriod(week, seasonType, year) {
+            return Number.isInteger(week) && week >= 1 && [2, 3].includes(seasonType) && Number.isInteger(year);
+        }
+
+        function validateDiscovery(data) {
+            const latest = data?.latest;
+            const board = data?.scoreboard;
+            if (!isSupportedPeriod(latest?.week, latest?.seasonType, latest?.year) ||
+                !isSupportedPeriod(board?.week?.number, board?.season?.type, board?.season?.year)) {
+                throw new Error('Invalid cached NFL week metadata.');
+            }
+            return { latest, scoreboard: Watchability.normalizeScoreboard(validateScoreboard(board)) };
+        }
+
         async function fetchScoreboardForWeek(week, seasonType, year, forceRefresh = false) {
-            if (!Number.isInteger(week) || week < 1 || ![2, 3].includes(seasonType) || !Number.isInteger(year)) {
+            if (!isSupportedPeriod(week, seasonType, year)) {
                 throw new Error('Unable to determine the NFL week to load. Please refresh and try again.');
             }
             const cacheKey = getScoreboardCacheKey(week, seasonType, year);
-            return validateScoreboard(await fetchCachedESPN(cacheKey, async () => {
+            const validateWeek = data => {
+                if (data?.week?.number !== week || data?.season?.type !== seasonType || data?.season?.year !== year) {
+                    throw new Error('ESPN returned a different NFL week than requested. Please try again later.');
+                }
+                return Watchability.normalizeScoreboard(validateScoreboard(data));
+            };
+            return fetchCachedESPN(cacheKey, async () => {
                 // The default endpoint can contain only today's games. Always request the whole week.
                 const url = `${SCOREBOARD_URL}?week=${week}&seasontype=${seasonType}&dates=${year}&limit=1000`;
                 const data = validateScoreboard(await fetchESPN(url));
@@ -525,7 +571,7 @@
                 data.week = { ...data.week, number: week };
                 data.season = { ...data.season, type: seasonType, year };
                 return Watchability.normalizeScoreboard(data);
-            }, getScoreboardCacheDuration, forceRefresh));
+            }, getScoreboardCacheDuration, forceRefresh, validateWeek);
         }
 
         let discoveryGeneration = 0;
@@ -535,7 +581,7 @@
             function ensureCurrent() {
                 if (generation !== discoveryGeneration || epoch !== fetchCachedESPN.epoch) throw new Error('Request superseded. Refresh data to try again.');
             }
-            const cached = !forceRefresh && getCachedData(CACHE_KEYS.SCOREBOARD);
+            const cached = !forceRefresh && getValidCachedData(CACHE_KEYS.SCOREBOARD, validateDiscovery);
             if (cached?.scoreboard && cached.latest) {
                 latestWeek = cached.latest.week;
                 latestSeasonType = cached.latest.seasonType;
@@ -637,6 +683,13 @@
             nextBtn.disabled = isAtLatestWeek();
         }
 
+        function validateGameFacts(data) {
+            if (!['pre', 'in', 'post'].includes(data?.state) || !Watchability.isPlayMetrics(data?.playMetrics)) {
+                throw new Error('ESPN returned unexpected game facts. Please try again later.');
+            }
+            return data;
+        }
+
         async function fetchGameFacts(gameId, forceRefresh = false) {
             const cacheKey = CACHE_KEYS.SUMMARY_PREFIX + gameId;
             return fetchCachedESPN(cacheKey, async () => {
@@ -646,7 +699,7 @@
                 }
                 return { playMetrics: Watchability.extractPlayMetrics(data),
                     state: data.header.competitions[0].status?.type?.state || 'pre' };
-            }, data => getCacheDuration(data.state), forceRefresh);
+            }, data => getCacheDuration(data.state), forceRefresh, validateGameFacts);
         }
 
         // Owns complete week data, request sharing, and speculative loading. It never
