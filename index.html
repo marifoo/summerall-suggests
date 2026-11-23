@@ -757,7 +757,7 @@
             if (!data || !Array.isArray(data.events) || !Number.isInteger(data.season?.year)) {
                 throw new Error('ESPN returned an unexpected scoreboard response. Please try again later.');
             }
-            const league = data.leagues?.find(league => league.calendar);
+            const league = data.leagues?.find(league => Array.isArray(league.calendar));
             if (league?.season?.year === data.season.year) {
                 seasonCalendars.set(data.season.year, league.calendar);
             }
@@ -771,23 +771,27 @@
         }
 
         function getLastWeek(seasonType, year) {
-            const entries = seasonCalendars.get(year)?.find(period => Number(period.value) === seasonType)?.entries;
-            if (entries?.length) return Math.max(...entries.map(entry => Number(entry.value)));
-            return seasonType === 3 ? 5 : (year >= 2021 ? 18 : 17);
+            const fallback = seasonType === 3 ? 5 : (year >= 2021 ? 18 : 17);
+            const calendar = seasonCalendars.get(year);
+            const entries = Array.isArray(calendar) ? calendar.find(period => Number(period?.value) === seasonType)?.entries : null;
+            const weeks = Array.isArray(entries) ? entries.map(entry => Number(entry?.value)) : [];
+            return weeks.length && weeks.every(week => Number.isInteger(week) && week >= 1 && week <= fallback) ?
+                Math.max(...weeks) : fallback;
         }
 
         function isSupportedPeriod(week, seasonType, year) {
-            return Number.isInteger(week) && week >= 1 && [2, 3].includes(seasonType) && Number.isInteger(year);
+            return Number.isInteger(week) && week >= 1 && [2, 3].includes(seasonType) && Number.isInteger(year) &&
+                week <= getLastWeek(seasonType, year);
         }
 
         function validateDiscovery(data) {
             const latest = data?.latest;
-            const board = data?.scoreboard;
+            const board = Watchability.normalizeScoreboard(validateScoreboard(data?.scoreboard));
             if (!isSupportedPeriod(latest?.week, latest?.seasonType, latest?.year) ||
                 !isSupportedPeriod(board?.week?.number, board?.season?.type, board?.season?.year)) {
                 throw new Error('Invalid cached NFL week metadata.');
             }
-            return { latest, scoreboard: Watchability.normalizeScoreboard(validateScoreboard(board)) };
+            return { latest, scoreboard: board };
         }
 
         async function fetchScoreboardForWeek(week, seasonType, year, forceRefresh = false) {
@@ -937,6 +941,7 @@
             const identity = JSON.stringify(context);
             const validate = data => {
                 validateGameFacts(data);
+                if (data.gameId !== String(gameId)) throw new Error('Cached game facts belong to a different game');
                 if (JSON.stringify(data.sourceContext) !== identity) throw new Error('Game fact context changed');
                 return data;
             };
@@ -946,7 +951,10 @@
                 if (!data?.header?.competitions?.length) {
                     throw new Error('ESPN returned an unexpected game summary response. Please try again later.');
                 }
-                return { playMetrics: Watchability.extractPlayMetrics(data, context), sourceContext: context,
+                if ([data.header.id, data.header.competitions[0].id].some(id => id != null && String(id) !== String(gameId))) {
+                    throw new Error('ESPN returned a different game summary than requested. Please try again later.');
+                }
+                return { gameId: String(gameId), playMetrics: Watchability.extractPlayMetrics(data, context), sourceContext: context,
                     state: data.header.competitions[0].status?.type?.state || 'pre' };
             }, data => getCacheDuration(data.state), forceRefresh, validate, identity);
         }

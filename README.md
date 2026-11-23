@@ -117,7 +117,10 @@ legacy app-owned `nfl_scoreboard*` / `nfl_summary_*` entries. Source caches are
 also validated at their domain boundary: weekly metadata must match the requested
 week/year/season type, discovery boundaries must be valid, and play facts must
 have the extractor's nullable numeric/boolean/evidence shape. Malformed source
-entries are removed and refetched, rather than passed into scoring or navigation. Other localStorage
+entries are removed and refetched, rather than passed into scoring or navigation.
+Discovery weeks must fit the season calendar; damaged calendars use NFL season
+length defaults. Summary event IDs, when supplied by ESPN, must match the
+requested game, and cached facts also carry and validate that game ID. Other localStorage
 keys are preserved. Storage is bounded to **128 entries and 1.5 MiB** (UTF-16
 key/value estimate), with least-recently-used eviction. Quota failures evict older
 entries and retry; unavailable storage becomes a cache miss. Three complete weeks
