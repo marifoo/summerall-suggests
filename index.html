@@ -79,6 +79,7 @@
         </footer>
     </div>
 
+    <script src="watchability.js"></script>
     <script>
         // ============================================
         // CONFIGURATION
@@ -503,331 +504,9 @@
             return false;
         }
 
-        function getPlaysFromSummary(summary) {
-            // ESPN API can have drives in different locations
-            // Try drives.previous first (common structure), then drives directly
-            let drives = summary.drives?.previous || summary.drives;
-
-            // If drives is an object with numbered keys, convert to array
-            if (drives && !Array.isArray(drives)) {
-                drives = Object.values(drives).filter(d => d && typeof d === 'object');
-            }
-
-            if (!Array.isArray(drives)) return [];
-
-            return drives.flatMap(d => d.plays || []);
-        }
-
-        function countLeadChanges(summary) {
-            const plays = getPlaysFromSummary(summary);
-            let leadChanges = 0;
-            let previousLeader = null;
-
-            for (const play of plays) {
-                const homeScore = play.homeScore || 0;
-                const awayScore = play.awayScore || 0;
-
-                let currentLeader = null;
-                if (homeScore > awayScore) currentLeader = 'home';
-                else if (awayScore > homeScore) currentLeader = 'away';
-
-                if (currentLeader && previousLeader && currentLeader !== previousLeader) {
-                    leadChanges++;
-                }
-
-                if (currentLeader) previousLeader = currentLeader;
-            }
-
-            return leadChanges;
-        }
-
-        function detectComeback(summary, finalHomeScore, finalAwayScore) {
-            // Returns { comeback: bool, strongComeback: bool }
-            // Comeback: Was down 15+ in 2nd half, then later tied or took the lead
-            // Strong Comeback: Was down 8+ in Q4/OT, then later tied or took the lead
-            const plays = getPlaysFromSummary(summary);
-
-            let homeWasDown15 = false;  // Home was down 15+ at some point in 2nd half
-            let awayWasDown15 = false;  // Away was down 15+ at some point in 2nd half
-            let homeErasedAfter15 = false;  // Home tied/led after being down 15+
-            let awayErasedAfter15 = false;  // Away tied/led after being down 15+
-
-            let homeWasDown8Q4 = false;  // Home was down 8+ at some point in Q4/OT
-            let awayWasDown8Q4 = false;  // Away was down 8+ at some point in Q4/OT
-            let homeErasedAfter8Q4 = false;  // Home tied/led after being down 8+ in Q4
-            let awayErasedAfter8Q4 = false;  // Away tied/led after being down 8+ in Q4
-
-            for (const play of plays) {
-                const period = play.period?.number || 0;
-                if (period < 3) continue; // Only Q3, Q4, OT
-
-                const homeScore = play.homeScore || 0;
-                const awayScore = play.awayScore || 0;
-                const diff = homeScore - awayScore; // positive = home leads
-
-                // Track 15+ deficits in 2nd half
-                if (diff <= -15) {
-                    homeWasDown15 = true;
-                }
-                if (diff >= 15) {
-                    awayWasDown15 = true;
-                }
-
-                // Check if deficit was erased (tied or took lead) after being down 15+
-                if (homeWasDown15 && diff >= 0) {
-                    homeErasedAfter15 = true;
-                }
-                if (awayWasDown15 && diff <= 0) {
-                    awayErasedAfter15 = true;
-                }
-
-                // Track 8+ deficits in Q4/OT
-                if (period >= 4) {
-                    if (diff <= -8) {
-                        homeWasDown8Q4 = true;
-                    }
-                    if (diff >= 8) {
-                        awayWasDown8Q4 = true;
-                    }
-
-                    // Check if deficit was erased after being down 8+ in Q4
-                    if (homeWasDown8Q4 && diff >= 0) {
-                        homeErasedAfter8Q4 = true;
-                    }
-                    if (awayWasDown8Q4 && diff <= 0) {
-                        awayErasedAfter8Q4 = true;
-                    }
-                }
-            }
-
-            const comeback = homeErasedAfter15 || awayErasedAfter15;
-            const strongComeback = homeErasedAfter8Q4 || awayErasedAfter8Q4;
-
-            return { comeback, strongComeback };
-        }
-
-        function isOvertimeGame(game) {
-            const competition = game.competitions?.[0];
-            const homeTeam = competition?.competitors?.find(c => c.homeAway === 'home');
-            const awayTeam = competition?.competitors?.find(c => c.homeAway === 'away');
-            const homeLinescores = homeTeam?.linescores || [];
-            // Regular game has 4 quarters; more than 4 means OT
-            return homeLinescores.length > 4;
-        }
-
-        function isOvertimeTie(game) {
-            const competition = game.competitions?.[0];
-            const homeTeam = competition?.competitors?.find(c => c.homeAway === 'home');
-            const awayTeam = competition?.competitors?.find(c => c.homeAway === 'away');
-            const homeScore = parseInt(homeTeam?.score || 0);
-            const awayScore = parseInt(awayTeam?.score || 0);
-            return isOvertimeGame(game) && homeScore === awayScore;
-        }
-
-        function detectLateLeadChange(summary) {
-            // Check if the last scoring play in Q4 was a lead change
-            const plays = getPlaysFromSummary(summary);
-
-            // Find all scoring plays in Q4 (period 4)
-            const q4ScoringPlays = [];
-            let prevHomeScore = 0;
-            let prevAwayScore = 0;
-
-            for (const play of plays) {
-                const period = play.period?.number || 0;
-                const homeScore = play.homeScore || 0;
-                const awayScore = play.awayScore || 0;
-
-                // Track score changes in Q4
-                if (period === 4 && (homeScore !== prevHomeScore || awayScore !== prevAwayScore)) {
-                    const prevLeader = prevHomeScore > prevAwayScore ? 'home' :
-                                       prevAwayScore > prevHomeScore ? 'away' : 'tie';
-                    const newLeader = homeScore > awayScore ? 'home' :
-                                      awayScore > homeScore ? 'away' : 'tie';
-
-                    q4ScoringPlays.push({
-                        prevLeader,
-                        newLeader,
-                        prevHomeScore,
-                        prevAwayScore,
-                        homeScore,
-                        awayScore
-                    });
-                }
-
-                prevHomeScore = homeScore;
-                prevAwayScore = awayScore;
-            }
-
-            if (q4ScoringPlays.length === 0) return false;
-
-            // Check the last scoring play in Q4
-            const lastPlay = q4ScoringPlays[q4ScoringPlays.length - 1];
-
-            // Debug logging
-            console.log('Q4 scoring plays:', q4ScoringPlays);
-            console.log('Last play:', lastPlay);
-
-            // Lead change: previous leader was one team, new leader is the other
-            return lastPlay.prevLeader !== 'tie' &&
-                   lastPlay.newLeader !== 'tie' &&
-                   lastPlay.prevLeader !== lastPlay.newLeader;
-        }
-
-        function getPreGameRecordDifferential(competitor, isWinner, isTie) {
-            // Parse record like "10-5" or "7-8-1" and return pre-game (wins - losses)
-            const record = competitor.records?.find(r => r.type === 'total')?.summary || '0-0';
-            const parts = record.split('-').map(Number);
-            let [wins, losses] = parts;
-
-            // Adjust to pre-game record
-            if (isTie) {
-                // No adjustment needed for wins/losses differential
-            } else if (isWinner) {
-                wins = Math.max(0, wins - 1);
-            } else {
-                losses = Math.max(0, losses - 1);
-            }
-
-            return wins - losses;
-        }
-
-        function getPreGameRecord(competitor, isWinner, isTie) {
-            const record = competitor.records?.find(r => r.type === 'total')?.summary || '0-0';
-            const parts = record.split('-').map(Number);
-            let [wins, losses, ties] = parts;
-            ties = ties || 0;
-
-            if (isTie) {
-                // Game was a tie, subtract from ties
-                return ties > 0 ? `${wins}-${losses}-${ties - 1}` : `${wins}-${losses}`;
-            } else if (isWinner) {
-                // Subtract 1 from wins for the winner
-                const newWins = Math.max(0, wins - 1);
-                return ties > 0 ? `${newWins}-${losses}-${ties}` : `${newWins}-${losses}`;
-            } else {
-                // Subtract 1 from losses for the loser
-                const newLosses = Math.max(0, losses - 1);
-                return ties > 0 ? `${wins}-${newLosses}-${ties}` : `${wins}-${newLosses}`;
-            }
-        }
-
-        // ============================================
-        // RECOMMENDATION CRITERIA (Points-based system)
-        // ============================================
         function evaluateGame(game, summary) {
-            const competition = game.competitions?.[0];
-            if (!competition) return { watchable: false, points: 0, reasons: [] };
-
-            const homeTeam = competition.competitors?.find(c => c.homeAway === 'home');
-            const awayTeam = competition.competitors?.find(c => c.homeAway === 'away');
-
-            const homeScore = parseInt(homeTeam?.score || 0);
-            const awayScore = parseInt(awayTeam?.score || 0);
-            const differential = Math.abs(homeScore - awayScore);
-            const combined = homeScore + awayScore;
-
-            let points = 0;
-            const reasons = [];
-
-            // Close Games: Differential ≤ 8 points gives +1
-            if (differential <= 8) {
-                points += 1;
-                reasons.push('close');
-            }
-
-            // Very Close Games: Differential ≤ 2 points gives bonus +1
-            if (differential <= 2) {
-                points += 1;
-                reasons.push('very-close');
-            }
-
-            // Decided in Overtime: Game goes into overtime and doesn't end in a draw gives +1
-            if (isOvertimeGame(game) && !isOvertimeTie(game)) {
-                points += 1;
-                reasons.push('overtime');
-            }
-
-            // Comebacks and Strong Comebacks (need summary)
-            if (summary) {
-                const comebackResult = detectComeback(summary, homeScore, awayScore);
-
-                // Comebacks: Recovery from 15+ point deficit in 2nd half gives +1
-                if (comebackResult.comeback) {
-                    points += 1;
-                    reasons.push('comeback');
-                }
-
-                // Strong Comebacks: Recovery from 8+ point deficit in Q4 gives bonus +1
-                if (comebackResult.strongComeback) {
-                    points += 1;
-                    reasons.push('strong-comeback');
-                }
-            }
-
-            // Shootouts: Combined score 55+ with differential ≤ 10 gives +1
-            if (combined >= 55 && differential <= 10) {
-                points += 1;
-                reasons.push('shootout');
-            }
-
-            // Super Shootouts: Combined score 64+ with differential ≤ 10 gives bonus +1
-            if (combined >= 64 && differential <= 10) {
-                points += 1;
-                reasons.push('super-shootout');
-            }
-
-            // Lead change criteria (need summary)
-            if (summary) {
-                const leadChanges = countLeadChanges(summary);
-
-                // Late Lead Changes: Last score in Q4 being a lead change gives +1
-                if (detectLateLeadChange(summary)) {
-                    points += 1;
-                    reasons.push('late-lead-change');
-                }
-
-                // Total Lead Changes: 5+ lead changes gives +1
-                if (leadChanges >= 5) {
-                    points += 1;
-                    reasons.push('lead-changes');
-                }
-
-                // Many Total Lead Changes: 7+ lead changes gives bonus +1
-                if (leadChanges >= 7) {
-                    points += 1;
-                    reasons.push('many-lead-changes');
-                }
-
-                // Record Number Total Lead Changes: 10+ lead changes gives bonus +1
-                if (leadChanges >= 10) {
-                    points += 1;
-                    reasons.push('record-lead-changes');
-                }
-            }
-
-            // Playoff Teams involved: Both teams with pre-game record differential ≥ +2 gives +1
-            const isTie = homeScore === awayScore;
-            const homeWon = homeScore > awayScore;
-            const homeRecordDiff = getPreGameRecordDifferential(homeTeam, homeWon, isTie);
-            const awayRecordDiff = getPreGameRecordDifferential(awayTeam, !homeWon && !isTie, isTie);
-
-            if (homeRecordDiff >= 2 && awayRecordDiff >= 2) {
-                points += 1;
-                reasons.push('playoff-teams');
-            }
-
-            // Losing Teams involved: Both teams with pre-game record differential ≤ -4 gives -1
-            if (homeRecordDiff <= -4 && awayRecordDiff <= -4) {
-                points -= 1;
-                reasons.push('losing-teams');
-            }
-
-            return {
-                watchable: points >= 3,  // 3+ points = recommended
-                points,
-                reasons
-            };
+            return Watchability.evaluate(Watchability.extractMetrics(game,
+                Watchability.extractPlayMetrics(summary), summary ? 'available' : 'not-requested'));
         }
 
         // ============================================
@@ -850,15 +529,7 @@
             const homeTeam = competition?.competitors?.find(c => c.homeAway === 'home');
             const awayTeam = competition?.competitors?.find(c => c.homeAway === 'away');
 
-            // Star ratings:
-            // - 3 stars for games with 5+ points
-            // - 1 star for highest scoring game(s) (unless already 5+, then 3 stars)
-            let stars = '';
-            if (evaluation.points >= 5) {
-                stars = '⭐⭐⭐';
-            } else if (evaluation.isTopGame) {
-                stars = '⭐';
-            }
+            const stars = '⭐'.repeat(evaluation.stars);
 
             const gameDate = new Date(game.date || competition?.date);
             const formattedDate = gameDate.toLocaleDateString('en-US', {
@@ -1048,57 +719,20 @@
                     return;
                 }
 
-                // Analyze each game
-                const gameAnalysis = [];
-
-                for (const game of completedGames) {
+                const gameAnalysis = Watchability.rankWeek(completedGames.map(game => {
                     const summary = summaries.get(game.id) || null;
-                    const evaluation = evaluateGame(game, summary);
-
-                    // Debug logging
-                    const comp = game.competitions?.[0];
-                    const hTeam = comp?.competitors?.find(c => c.homeAway === 'home');
-                    const aTeam = comp?.competitors?.find(c => c.homeAway === 'away');
-                    console.log(`${aTeam?.team?.abbreviation} @ ${hTeam?.team?.abbreviation}: ${evaluation.points} points`, evaluation.reasons);
-
-                    // Calculate pre-game records
-                    const competition = game.competitions?.[0];
-                    const homeTeam = competition?.competitors?.find(c => c.homeAway === 'home');
-                    const awayTeam = competition?.competitors?.find(c => c.homeAway === 'away');
-                    const homeScore = parseInt(homeTeam?.score || 0);
-                    const awayScore = parseInt(awayTeam?.score || 0);
-                    const homeWon = homeScore > awayScore;
-                    const isTie = homeScore === awayScore;
-
-                    const homeRecord = getPreGameRecord(homeTeam, homeWon, isTie);
-                    const awayRecord = getPreGameRecord(awayTeam, !homeWon && !isTie, isTie);
-
-                    gameAnalysis.push({
-                        game,
-                        summary,
-                        evaluation,
-                        homeRecord,
-                        awayRecord
-                    });
-                }
-
-                // Find max points for top game assignment (3 stars)
-                const maxPoints = Math.max(...gameAnalysis.map(g => g.evaluation.points));
-
-                // Separate watchable and non-watchable games
-                const watchableGames = gameAnalysis.filter(g => g.evaluation.watchable);
-                const otherGames = gameAnalysis.filter(g => !g.evaluation.watchable);
-
-                // Mark top games with 3 stars (highest points, must be watchable)
-                watchableGames.forEach(g => {
-                    g.evaluation.isTopGame = g.evaluation.points === maxPoints && maxPoints >= 2;
-                });
+                    const metrics = Watchability.extractMetrics(game, Watchability.extractPlayMetrics(summary),
+                        summary ? 'available' : shouldFetchSummary(game) ? 'fetch-failed' : 'not-requested');
+                    return { game, metrics, evaluation: Watchability.evaluate(metrics) };
+                }));
+                const watchableGames = gameAnalysis.filter(item => item.evaluation.watchable);
+                const otherGames = gameAnalysis.filter(item => !item.evaluation.watchable);
 
                 // Render watchable games (sorted by points, descending)
                 if (watchableGames.length > 0) {
                     watchableContainer.innerHTML = watchableGames
                         .sort((a, b) => b.evaluation.points - a.evaluation.points)
-                        .map(g => renderWatchableGame(g.game, g.evaluation, g.homeRecord, g.awayRecord))
+                        .map(g => renderWatchableGame(g.game, { stars: g.ranking.stars }, g.metrics.homeRecord ?? 'Unavailable', g.metrics.awayRecord ?? 'Unavailable'))
                         .join('');
                     noWatchable.classList.add('hidden');
                 } else {

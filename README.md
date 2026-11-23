@@ -54,7 +54,7 @@ schedule order for ties. A low-scoring weekly leader is not recommended automati
 
 ## Technical Details
 
-- **Single HTML File**: Pure vanilla JavaScript (ES6+), no build tools required
+- **Static App**: Pure vanilla JavaScript (ES6+), no build tools required
 - **Styling**: Tailwind CSS via CDN
 - **Data Source**: ESPN public APIs
 - **API Requests**: Fetches scoreboards and game summaries directly from ESPN, with a 15-second timeout and HTTP/JSON error handling; no proxy or API key required
@@ -71,6 +71,22 @@ schedule order for ties. A low-scoring weekly leader is not recommended automati
   - Latest-week detection: 5 minutes
   - Manual refresh bypasses the selected week's scoreboard and game-summary caches
   - Older in-flight responses cannot overwrite a newer refresh in persistent storage
+
+## Architecture
+
+`watchability.js` is a pure module with four boundaries: allowlist ESPN normalization,
+threshold-independent metric extraction, deterministic individual evaluation, and
+week-level ranking. `evaluate(metrics)` returns every rule's inputs, thresholds,
+weight, applicability, match result, awarded points (including zero and negative),
+total, and recommendation cutoff/decision. `rankWeek` adds rank and star explanations
+without mutating evaluations. All scoring thresholds and weights live together in
+that module. The page owns fetching, navigation, and rendering.
+
+Unavailable scores, records, linescores, and play history are `null`, rather than
+fabricated zeros or false values. Rules lacking required data award zero points and
+explain why they are inapplicable. Scheduled/live/cancelled games cannot qualify.
+This explicitly handles absent facts; valid-data scoring follows the characterized
+implementation. Empty or incomplete play history cannot establish a negative fact.
 
 ## Deployment
 
@@ -90,10 +106,10 @@ Week requests include `dates={seasonYear}`, `seasontype={2|3}`, `week={week}`, a
 
 ## Verification
 
-Run the fetch and rendering regression tests with Node.js 18 or newer (no dependencies to install):
+Run the scoring, extraction, ranking, fetch, and rendering regression tests with Node.js 18 or newer (no dependencies to install):
 
 ```sh
-node --test tests/espn-fetch.test.cjs
+node --test tests/*.test.cjs
 ```
 
 See [AGENTS.md](AGENTS.md) for design principles, red-green bug-fix testing, and atomic commit requirements.

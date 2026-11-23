@@ -59,7 +59,7 @@ function app(fetchImpl, { storage = new Map(), storageBlocked = false, timers = 
     }
     const calls = [];
     const context = vm.createContext({
-        AbortController, TypeError,
+        Watchability: require('../watchability.js'), AbortController, TypeError,
         Date: class extends Date { static now() { return now(); } },
         setTimeout(callback, delay) {
             if (delay !== 0) return requestTimers.setTimeout(callback, delay);
@@ -521,7 +521,8 @@ function evaluateFixture({ home = '24', away = '21', plays = [], records = ['1-0
         team.linescores = Array.from({ length: overtime ? 5 : 4 }, () => ({ value: 0 }));
     });
     const page = app(() => {});
-    return plain(page.run(`evaluateGame(${JSON.stringify(fixture)}, ${withSummary ? JSON.stringify({ drives: { previous: [{ plays }] } }) : 'null'})`));
+    const { watchable, points, reasons } = plain(page.run(`evaluateGame(${JSON.stringify(fixture)}, ${withSummary ? JSON.stringify({ drives: { previous: [{ plays }] } }) : 'null'})`));
+    return { watchable, points, reasons };
 }
 const play = (homeScore, awayScore, period = 4) => ({ homeScore, awayScore, period: { number: period } });
 
