@@ -158,7 +158,9 @@ fabricated zeros or false values. Rules lacking required data award zero points 
 explain why they are inapplicable. Scheduled/live/cancelled games cannot qualify.
 Normalization falls back to competition status when event status omits its type.
 This explicitly handles absent facts; valid-data scoring follows the characterized
-implementation. Empty or incomplete play history cannot establish a negative fact.
+implementation. Missing or incomplete score history cannot establish negative play facts. Missing
+periods disable period-dependent metrics while preserving lead counts established
+by a complete score sequence.
 
 ## Deployment
 

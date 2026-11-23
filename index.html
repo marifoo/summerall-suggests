@@ -96,7 +96,7 @@
 /* Pure ESPN normalization, fact extraction, scoring, and ranking. No I/O or UI. */
 (function (root) {
     'use strict';
-    const EXTRACTION_VERSION = 2;
+    const EXTRACTION_VERSION = 3;
     const RULES_VERSION = 1;
     const POLICY = Object.freeze({ recommendation: 3, threeStars: 5 });
     const number = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)) ? Number(value) : null;
@@ -146,9 +146,10 @@
 
     function extractPlayMetrics(summary) {
         const plays = normalizePlays(summary);
-        const missing = !plays ? 'Play history unavailable' : plays.some(play => play.home === null || play.away === null || play.period === null) ? 'Play history incomplete' : null;
+        const missing = !plays ? 'Play history unavailable' : plays.some(play => play.home === null || play.away === null) ? 'Play history incomplete' : null;
         if (missing) return { leadChanges: null, lateLeadChange: null, lastQ4Score: null,
             erasedDeficitSecondHalf: null, erasedDeficitFourthQuarter: null, comebackFacts: null, unavailable: missing };
+        const periodsKnown = plays.every(play => play.period !== null);
         let previousLeader = null, leadChanges = 0, previousHome = 0, previousAway = 0, lastQ4Score = null;
         const leader = (home, away) => home > away ? 'home' : away > home ? 'away' : 'tie';
         const comebackFacts = Object.fromEntries(['home', 'away'].map(side => [side, {
@@ -179,11 +180,12 @@
                 }
             }
         }
-        return { leadChanges, lastQ4Score, lateLeadChange: !!lastQ4Score && lastQ4Score.previousLeader !== 'tie' &&
-            lastQ4Score.newLeader !== 'tie' && lastQ4Score.previousLeader !== lastQ4Score.newLeader,
-            erasedDeficitSecondHalf: Math.max(...Object.values(comebackFacts).map(facts => facts.erasedSecondHalfDeficit)),
-            erasedDeficitFourthQuarter: Math.max(...Object.values(comebackFacts).map(facts => facts.erasedFourthQuarterDeficit)),
-            comebackFacts, unavailable: null };
+        return { leadChanges, lastQ4Score: periodsKnown ? lastQ4Score : null,
+            lateLeadChange: periodsKnown ? !!lastQ4Score && lastQ4Score.previousLeader !== 'tie' &&
+                lastQ4Score.newLeader !== 'tie' && lastQ4Score.previousLeader !== lastQ4Score.newLeader : null,
+            erasedDeficitSecondHalf: periodsKnown ? Math.max(...Object.values(comebackFacts).map(facts => facts.erasedSecondHalfDeficit)) : null,
+            erasedDeficitFourthQuarter: periodsKnown ? Math.max(...Object.values(comebackFacts).map(facts => facts.erasedFourthQuarterDeficit)) : null,
+            comebackFacts: periodsKnown ? comebackFacts : null, unavailable: periodsKnown ? null : 'Play periods unavailable' };
     }
 
     function preGameRecord(team, won, tie) {
