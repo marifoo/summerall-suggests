@@ -674,7 +674,7 @@
                     const data = scoreboard || await fetchScoreboardForWeek(week, seasonType, year, forceRefresh);
                     // Hydrating memory must not renew an existing scoreboard's TTL.
                     // Capture expiry before summaries load, which can take time.
-                    const expiresAt = Math.min(startedAt + getScoreboardCacheDuration(data),
+                    let expiresAt = Math.min(startedAt + getScoreboardCacheDuration(data),
                         getCachedEntry(key)?.expiresAt ?? Infinity,
                         // Discovery can still hold a snapshot after the weekly entry
                         // expires. Memory must respect that snapshot's lifetime too.
@@ -686,7 +686,13 @@
                         if (weeks.get(key) !== entry) break;
                         if (!shouldFetchSummary(game)) continue;
                         try {
-                            summaries.set(game.id, await fetchGameFacts(game.id, forceRefresh));
+                            const factsStartedAt = Date.now();
+                            const facts = await fetchGameFacts(game.id, forceRefresh);
+                            summaries.set(game.id, facts);
+                            // Derived week data must not outlive any fact it uses.
+                            expiresAt = Math.min(expiresAt,
+                                getCachedEntry(CACHE_KEYS.SUMMARY_PREFIX + game.id)?.expiresAt ??
+                                factsStartedAt + getCacheDuration(facts.state));
                         } catch (error) {
                             complete = false;
                             console.warn(`Failed to fetch summary for game ${game.id}:`, error);

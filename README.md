@@ -124,8 +124,9 @@ Lifetimes:
 | Live / scheduled summary-derived metrics | 5 minutes / 1 hour |
 | Individual metrics and decisions | Selected scoreboard's remaining lifetime |
 
-Reads preserve original expiration; warming memory cannot renew scoreboard or
-latest-detection lifetimes. Expired facts are refetched, rather than kept forever.
+Reads preserve original expiration; warming memory cannot renew scoreboard,
+latest-detection, or summary-derived fact lifetimes. A memory week expires at the
+earliest expiration of its scoreboard and the play facts used in its decisions. Expired facts are refetched, rather than kept forever.
 Manual refresh bypasses the selected week's scoreboard and play-fact caches;
 refresh at the latest week also rediscovers the latest week. Requests share work,
 but a refresh starts a fresh request and older responses cannot replace it in
