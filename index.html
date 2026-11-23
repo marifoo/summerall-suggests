@@ -417,7 +417,11 @@
                     // Hydrating memory must not renew an existing scoreboard's TTL.
                     // Capture expiry before summaries load, which can take time.
                     const expiresAt = Math.min(startedAt + getScoreboardCacheDuration(data),
-                        getCachedEntry(key)?.expiresAt ?? Infinity);
+                        getCachedEntry(key)?.expiresAt ?? Infinity,
+                        // Discovery can still hold a snapshot after the weekly entry
+                        // expires. Memory must respect that snapshot's lifetime too.
+                        scoreboard ? (getCachedEntry(CACHE_KEYS.SCOREBOARD)?.expiresAt ??
+                            startedAt + CACHE_DURATIONS.IN_PROGRESS) : Infinity);
                     const summaries = new Map();
                     let complete = true;
                     for (const game of data.events.filter(isCompletedGame)) {

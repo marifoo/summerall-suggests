@@ -494,3 +494,21 @@ test('an older summary response cannot replace a refreshed final summary in pers
     assert.equal(cached.marker, 'fresh');
     assert.equal(requests, 2);
 });
+
+test('latest-week detection cannot extend stale in-memory results beyond its own expiration', async () => {
+    let now = 0;
+    const hour = 60 * 60 * 1000;
+    const page = app(() => jsonResponse(scoreboard({ events: [
+        game('finished', 'post', '40', '3'),
+        now < hour ? game('pending', 'pre', '0', '0') : game('pending', 'post', '30', '3')
+    ] })), { now: () => now });
+    await page.run('fetchScoreboardForWeek(11, 2, 2026)');
+    now = 59 * 60 * 1000;
+    await page.run('fetchScoreboard()');
+    now = 61 * 60 * 1000;
+    await page.run('loadGames()');
+    assert.equal(page.element('spoiler-count').textContent, 1);
+    now = 65 * 60 * 1000;
+    await page.run('loadGames()');
+    assert.equal(page.element('spoiler-count').textContent, 2);
+});

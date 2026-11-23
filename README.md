@@ -40,7 +40,7 @@ Games meeting the most criteria receive a star icon.
 - **Caching Strategy**:
   - Each week cached separately for quick navigation
   - Up to three complete weeks retained in memory, so preloaded results remain available when localStorage is full or blocked
-  - Moving a cached scoreboard into memory preserves its original expiration
+  - Moving a cached scoreboard into memory preserves its original expiration, including the five-minute latest-week detection limit
   - Scoreboard (all games final): 2 hours
   - Game summaries (final): Cached indefinitely
   - In-progress games: 5 minutes
