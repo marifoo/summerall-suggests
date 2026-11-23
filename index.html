@@ -96,7 +96,7 @@
 /* Pure ESPN normalization, fact extraction, scoring, and ranking. No I/O or UI. */
 (function (root) {
     'use strict';
-    const EXTRACTION_VERSION = 5;
+    const EXTRACTION_VERSION = 6;
     const RULES_VERSION = 2;
     const POLICY = Object.freeze({ recommendation: 3, oneStar: 6 });
     const number = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)) ? Number(value) : null;
@@ -139,7 +139,8 @@
     // not contiguity: even a reconciled summary may omit a scoreless drive.
     const clockSeconds = clock => {
         const match = /^(\d{1,2}):([0-5]\d)$/.exec(clock?.displayValue || '');
-        return match && Number(match[1]) <= 15 ? Number(match[1]) * 60 + Number(match[2]) : null;
+        const seconds = match ? Number(match[1]) * 60 + Number(match[2]) : null;
+        return seconds !== null && seconds <= 900 ? seconds : null;
     };
     function sourceContext(game) {
         const teams = game.competitions?.[0]?.competitors || [];
@@ -255,11 +256,12 @@
         }
         const leader = p => p.home > p.away ? 'home' : p.away > p.home ? 'away' : 'tie';
         const valid = p => p && p.home !== null && p.away !== null;
-        let prior = null, priorLeader = null;
+        let prior = null, priorPossession = null, priorLeader = null;
+        let q4ClockUpperBound = null;
         const maxima = { home:{ secondHalfDeficit:0, fourthQuarterDeficit:0, erasedSecondHalfDeficit:0, erasedFourthQuarterDeficit:0 },
             away:{ secondHalfDeficit:0, fourthQuarterDeficit:0, erasedSecondHalfDeficit:0, erasedFourthQuarterDeficit:0 } };
         for (const play of plays) {
-            if (!valid(play)) { prior = null; continue; }
+            if (!valid(play)) { priorPossession = null; continue; }
             const currentLeader = leader(play);
             // Monotone observations prove at least one switch even across a gap.
             if (priorLeader && currentLeader !== 'tie' && priorLeader !== currentLeader) result.leadChangesLowerBound++;
@@ -305,8 +307,10 @@
                 // retain a conservative interval between observed score states.
                 const independent = !!scoringBefore || independentTie;
                 const exact = independent ? play.clock : null;
-                const upper = independent ? play.clock : prior?.period === 4 ? prior.clock : 900;
-                const interval = upper !== null && play.clock !== null && upper >= play.clock ? [play.clock,upper] : null;
+                const upper = independent && play.clock !== null ? play.clock :
+                    q4ClockUpperBound ?? (before && !independent ? 900 : null);
+                const lower = play.clock ?? 0;
+                const interval = upper !== null && upper >= lower ? [lower,upper] : null;
                 const evidenceBefore = scoringBefore || (independentTie ? null : before);
                 const evidence = { before:evidenceBefore ? {home:evidenceBefore.home, away:evidenceBefore.away} : null, after:{home:play.home,away:play.away},
                     period:4, exactClock:exact, clockRange:interval,
@@ -332,22 +336,24 @@
             // Same-owner post-play observations inside one drive support a
             // possession interval. A turnover's finish clock cannot time the loss,
             // so start ownership alone never establishes its end boundary.
-            if (play.period === 4 && prior?.period === 4 && prior.drive === play.drive &&
-                play.clock !== null && prior.clock !== null && play.clock < prior.clock &&
-                play.home === prior.home && play.away === prior.away &&
-                prior.end?.team?.id === play.start?.team?.id && play.end?.team?.id === play.start?.team?.id &&
-                !prior.terminal && !play.terminal &&
+            if (play.period === 4 && priorPossession?.period === 4 && priorPossession.drive === play.drive &&
+                play.clock !== null && priorPossession.clock !== null && play.clock < priorPossession.clock &&
+                play.home === priorPossession.home && play.away === priorPossession.away &&
+                priorPossession.end?.team?.id === play.start?.team?.id && play.end?.team?.id === play.start?.team?.id &&
+                !priorPossession.terminal && !play.terminal &&
                 Number.isInteger(play.end?.down) && play.end.down >= 1 && play.end.down <= 4 &&
-                Number.isInteger(prior.end?.down) && prior.end.down >= 1 && prior.end.down <= 4 &&
+                Number.isInteger(priorPossession.end?.down) && priorPossession.end.down >= 1 && priorPossession.end.down <= 4 &&
                 Number.isInteger(play.start?.down) && play.start.down >= 1 && play.start.down <= 4) {
                 const side = sideFor(play.start.team?.id);
                 const deficit = side === 'home' ? play.away-play.home : side === 'away' ? play.home-play.away : null;
                 if (deficit !== null && deficit > 0) {
-                    const witness = {deficit, startClock:prior.clock, endClock:play.clock, endInclusive:false, period:4};
+                    const witness = {deficit, startClock:priorPossession.clock, endClock:play.clock, endInclusive:false, period:4};
                     recordPossession(witness);
                 }
             }
+            if (play.period === 4 && play.clock !== null) q4ClockUpperBound = play.clock;
             prior = play;
+            priorPossession = play;
         }
         for (const [field,key] of [['erasedDeficitSecondHalf','erasedSecondHalfDeficit'],['erasedDeficitFourthQuarter','erasedFourthQuarterDeficit']]) {
             const earned = Math.max(maxima.home[key],maxima.away[key]);
@@ -495,7 +501,7 @@
             return { id, inputs, threshold: Object.fromEntries(tiers.map(t => [t.id, t.threshold])),
                 weight: definitions.at(-1).points, applicable: tiers.some(t => t.applicable), matched,
                 tiers, selectedTier: selected?.id ?? null, points: selected?.points ?? 0,
-                explanation: !metrics.completed ? 'Game not completed' : selected ? `Selected ${selected.id}; category capped at ${selected.points}${unresolved ? '; higher tier unresolved' : ''}` : matched === null ? 'Required data unavailable' : 'Condition not met' };
+                explanation: !metrics.completed ? 'Game not completed' : selected ? `Selected ${selected.id}; awarded ${selected.points} points; category capped at ${definitions.at(-1).points}${unresolved ? '; higher tier unresolved' : ''}` : matched === null ? 'Required data unavailable' : 'Condition not met' };
         });
         const points = rules.reduce((total, rule) => total + rule.points, 0);
         const watchable = !!metrics.completed && points >= POLICY.recommendation;
@@ -1156,10 +1162,11 @@
             const awayLinescores = awayTeam?.linescores || [];
 
             let quarterScores = '';
-            if (homeLinescores.length > 0) {
-                const quarters = homeLinescores.map((_, i) => `Q${i + 1}`).join('</th><th class="px-2">');
-                const awayQuarters = awayLinescores.map(q => q.value ?? '—').join('</td><td class="px-2 text-center">');
-                const homeQuarters = homeLinescores.map(q => q.value ?? '—').join('</td><td class="px-2 text-center">');
+            const periods = Array.from({ length: Math.max(homeLinescores.length, awayLinescores.length) }, (_, i) => i);
+            if (periods.length > 0) {
+                const quarters = periods.map(i => i < 4 ? `Q${i + 1}` : i === 4 ? 'OT' : `${i - 3}OT`).join('</th><th class="px-2">');
+                const awayQuarters = periods.map(i => awayLinescores[i]?.value ?? '—').join('</td><td class="px-2 text-center">');
+                const homeQuarters = periods.map(i => homeLinescores[i]?.value ?? '—').join('</td><td class="px-2 text-center">');
 
                 quarterScores = `
                     <table class="text-xs text-gray-400 mt-2 mx-auto">

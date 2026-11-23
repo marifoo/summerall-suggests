@@ -75,6 +75,8 @@ the inspection content from the DOM. Navigation clears old inspection results
 while loading; the checkbox stays enabled for the current page session.
 Normal recommendation cards continue to show only names, pre-game records, dates,
 and stars; scores and rule details remain behind the separate spoiler opt-ins.
+Spoiler quarter tables align both teams across all known periods, label overtime
+as OT/2OT/etc., and show a dash for unavailable quarter values.
 
 ## Technical Details
 
@@ -182,6 +184,9 @@ therefore remain unknown; independently proved leader switches provide a lower
 bound that still earns supported lead-change tiers. Quarter and final-score
 reconciliation detects contradictions but cannot prove completeness. Q4 score
 intervals retain conservative clock bounds, separate from an exact event clock.
+A missing score observation does not erase a proved transition between known
+states; a missing ending clock can still use a preceding known Q4 time as its
+upper bound. Malformed clocks remain unknown without discarding other facts.
 
 Halftime and cumulative end-of-Q3 scores anchor regulation comebacks and Q4
 competitiveness; overtime-only recoveries do not count. Each cached summary fact

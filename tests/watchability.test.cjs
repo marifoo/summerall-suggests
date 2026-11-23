@@ -47,7 +47,9 @@ test('extraction stores threshold-independent comeback facts and Q4 drama eviden
     assert.equal(result.q4TyingOrGoAhead, true);
     assert.deepEqual(result.dramaEvidence.before, { home: 16, away: 25 });
     assert.deepEqual(result.dramaEvidence.after, { home: 26, away: 25 });
-    assert.equal(result.q4ScoreClockUpperBound, null);
+    // Period 4 alone bounds this interval to 0–900 seconds without an exact clock.
+    assert.equal(result.q4ScoreClockUpperBound, 900);
+    assert.equal(result.dramaEvidence.exactClock, null);
     assert.equal(result.leadChangesLowerBound, 1);
     assert.deepEqual(W.extractPlayMetrics({ drives: { 0: { plays: [play(0, 16, 3), play(16, 16, 3), play(16, 25, 4), play(26, 25, 4)] } } }), result);
 });
