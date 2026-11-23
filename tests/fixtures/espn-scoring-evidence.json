@@ -1,0 +1,327 @@
+{
+  "source": "https://site.api.espn.com/apis/site/v2/sports/football/nfl/summary?event=401671793",
+  "header": {
+    "competitions": [
+      {
+        "competitors": [
+          {
+            "id": "1",
+            "homeAway": "home"
+          },
+          {
+            "id": "12",
+            "homeAway": "away"
+          }
+        ]
+      }
+    ]
+  },
+  "drives": {
+    "previous": [
+      {
+        "plays": [
+          {
+            "id": "401671793211",
+            "sequenceNumber": "21100",
+            "homeScore": 7,
+            "awayScore": 0,
+            "period": {
+              "number": 1
+            },
+            "clock": {
+              "displayValue": "11:07"
+            },
+            "scoringPlay": true,
+            "scoringType": {
+              "name": "touchdown",
+              "displayName": "Touchdown",
+              "abbreviation": "TD"
+            },
+            "pointAfterAttempt": {
+              "id": 61,
+              "text": "Extra Point Good",
+              "abbreviation": "Extra Point Good",
+              "value": 1
+            },
+            "type": {
+              "id": "67",
+              "text": "Passing Touchdown",
+              "abbreviation": "TD"
+            },
+            "start": {
+              "down": 3,
+              "distance": 3,
+              "yardLine": 86,
+              "yardsToEndzone": 14,
+              "downDistanceText": "3rd & 3 at KC 14",
+              "shortDownDistanceText": "3rd & 3",
+              "possessionText": "KC 14",
+              "team": {
+                "id": "1"
+              }
+            },
+            "end": {
+              "down": -1,
+              "distance": 10,
+              "yardLine": 100,
+              "yardsToEndzone": 15,
+              "team": {
+                "id": "1"
+              }
+            },
+            "isTurnover": false
+          },
+          {
+            "id": "4016717931302",
+            "sequenceNumber": "130200",
+            "homeScore": 7,
+            "awayScore": 7,
+            "period": {
+              "number": 2
+            },
+            "clock": {
+              "displayValue": "8:45"
+            },
+            "scoringPlay": true,
+            "scoringType": {
+              "name": "touchdown",
+              "displayName": "Touchdown",
+              "abbreviation": "TD"
+            },
+            "pointAfterAttempt": {
+              "id": 61,
+              "text": "Extra Point Good",
+              "abbreviation": "Extra Point Good",
+              "value": 1
+            },
+            "type": {
+              "id": "67",
+              "text": "Passing Touchdown",
+              "abbreviation": "TD"
+            },
+            "start": {
+              "down": 3,
+              "distance": 3,
+              "yardLine": 13,
+              "yardsToEndzone": 13,
+              "downDistanceText": "3rd & 3 at ATL 13",
+              "shortDownDistanceText": "3rd & 3",
+              "possessionText": "ATL 13",
+              "team": {
+                "id": "12"
+              }
+            },
+            "end": {
+              "down": -1,
+              "distance": 10,
+              "yardLine": 0,
+              "yardsToEndzone": 15,
+              "team": {
+                "id": "12"
+              }
+            },
+            "isTurnover": false
+          },
+          {
+            "id": "4016717931525",
+            "sequenceNumber": "152500",
+            "homeScore": 14,
+            "awayScore": 7,
+            "period": {
+              "number": 2
+            },
+            "clock": {
+              "displayValue": "6:37"
+            },
+            "scoringPlay": true,
+            "scoringType": {
+              "name": "touchdown",
+              "displayName": "Touchdown",
+              "abbreviation": "TD"
+            },
+            "pointAfterAttempt": {
+              "id": 61,
+              "text": "Extra Point Good",
+              "abbreviation": "Extra Point Good",
+              "value": 1
+            },
+            "type": {
+              "id": "68",
+              "text": "Rushing Touchdown",
+              "abbreviation": "TD"
+            },
+            "start": {
+              "down": 1,
+              "distance": 1,
+              "yardLine": 99,
+              "yardsToEndzone": 1,
+              "downDistanceText": "1st & Goal at KC 1",
+              "shortDownDistanceText": "1st & Goal",
+              "possessionText": "KC 1",
+              "team": {
+                "id": "1"
+              }
+            },
+            "end": {
+              "down": -1,
+              "distance": 10,
+              "yardLine": 100,
+              "yardsToEndzone": 15,
+              "team": {
+                "id": "1"
+              }
+            },
+            "isTurnover": false
+          },
+          {
+            "id": "4016717932552",
+            "sequenceNumber": "255200",
+            "homeScore": 14,
+            "awayScore": 16,
+            "period": {
+              "number": 3
+            },
+            "clock": {
+              "displayValue": "9:40"
+            },
+            "scoringPlay": true,
+            "scoringType": {
+              "name": "field-goal",
+              "displayName": "Field Goal",
+              "abbreviation": "FG"
+            },
+            "type": {
+              "id": "59",
+              "text": "Field Goal Good",
+              "abbreviation": "FG"
+            },
+            "start": {
+              "down": 4,
+              "distance": 3,
+              "yardLine": 3,
+              "yardsToEndzone": 3,
+              "downDistanceText": "4th & Goal at ATL 3",
+              "shortDownDistanceText": "4th & Goal",
+              "possessionText": "ATL 3",
+              "team": {
+                "id": "12"
+              }
+            },
+            "end": {
+              "down": -1,
+              "distance": 10,
+              "yardLine": 0,
+              "yardsToEndzone": 65,
+              "team": {
+                "id": "12"
+              }
+            },
+            "isTurnover": false
+          }
+        ]
+      }
+    ]
+  },
+  "scoringPlays": [
+    {
+      "id": "401671793211",
+      "homeScore": 7,
+      "awayScore": 0,
+      "period": {
+        "number": 1
+      },
+      "clock": {
+        "value": 667.0,
+        "displayValue": "11:07"
+      },
+      "scoringType": {
+        "name": "touchdown",
+        "displayName": "Touchdown",
+        "abbreviation": "TD"
+      },
+      "type": {
+        "id": "67",
+        "text": "Passing Touchdown",
+        "abbreviation": "TD"
+      },
+      "team": {
+        "id": "1"
+      }
+    },
+    {
+      "id": "4016717931302",
+      "homeScore": 7,
+      "awayScore": 7,
+      "period": {
+        "number": 2
+      },
+      "clock": {
+        "value": 525.0,
+        "displayValue": "8:45"
+      },
+      "scoringType": {
+        "name": "touchdown",
+        "displayName": "Touchdown",
+        "abbreviation": "TD"
+      },
+      "type": {
+        "id": "67",
+        "text": "Passing Touchdown",
+        "abbreviation": "TD"
+      },
+      "team": {
+        "id": "12"
+      }
+    },
+    {
+      "id": "4016717931525",
+      "homeScore": 14,
+      "awayScore": 7,
+      "period": {
+        "number": 2
+      },
+      "clock": {
+        "value": 397.0,
+        "displayValue": "6:37"
+      },
+      "scoringType": {
+        "name": "touchdown",
+        "displayName": "Touchdown",
+        "abbreviation": "TD"
+      },
+      "type": {
+        "id": "68",
+        "text": "Rushing Touchdown",
+        "abbreviation": "TD"
+      },
+      "team": {
+        "id": "1"
+      }
+    },
+    {
+      "id": "4016717932552",
+      "homeScore": 14,
+      "awayScore": 16,
+      "period": {
+        "number": 3
+      },
+      "clock": {
+        "value": 580.0,
+        "displayValue": "9:40"
+      },
+      "scoringType": {
+        "name": "field-goal",
+        "displayName": "Field Goal",
+        "abbreviation": "FG"
+      },
+      "type": {
+        "id": "59",
+        "text": "Field Goal Good",
+        "abbreviation": "FG"
+      },
+      "team": {
+        "id": "12"
+      }
+    }
+  ]
+}

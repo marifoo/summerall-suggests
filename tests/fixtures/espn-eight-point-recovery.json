@@ -1,0 +1,105 @@
+{
+  "source": "https://site.api.espn.com/apis/site/v2/sports/football/nfl/summary?event=401438030",
+  "header": {
+    "competitions": [
+      {
+        "competitors": [
+          {
+            "id": "21",
+            "homeAway": "home"
+          },
+          {
+            "id": "12",
+            "homeAway": "away"
+          }
+        ]
+      }
+    ]
+  },
+  "drives": {
+    "previous": [
+      {
+        "plays": [
+          {
+            "id": "4014380303664",
+            "sequenceNumber": "366400",
+            "homeScore": 35,
+            "awayScore": 35,
+            "period": {
+              "number": 4
+            },
+            "clock": {
+              "displayValue": "5:15"
+            },
+            "scoringPlay": true,
+            "scoringType": {
+              "name": "touchdown",
+              "displayName": "Touchdown",
+              "abbreviation": "TD"
+            },
+            "pointAfterAttempt": {
+              "id": 16,
+              "text": "Two Point Rush",
+              "abbreviation": "Two Point Rush",
+              "value": 2
+            },
+            "type": {
+              "id": "68",
+              "text": "Rushing Touchdown",
+              "abbreviation": "TD"
+            },
+            "start": {
+              "down": 1,
+              "distance": 2,
+              "yardLine": 98,
+              "yardsToEndzone": 2,
+              "downDistanceText": "1st & Goal at KC 2",
+              "shortDownDistanceText": "1st & Goal",
+              "possessionText": "KC 2",
+              "team": {
+                "id": "21"
+              }
+            },
+            "end": {
+              "down": -1,
+              "distance": 10,
+              "yardLine": 100,
+              "yardsToEndzone": 15,
+              "team": {
+                "id": "21"
+              }
+            },
+            "isTurnover": false
+          }
+        ]
+      }
+    ]
+  },
+  "scoringPlays": [
+    {
+      "id": "4014380303664",
+      "homeScore": 35,
+      "awayScore": 35,
+      "period": {
+        "number": 4
+      },
+      "clock": {
+        "value": 315.0,
+        "displayValue": "5:15"
+      },
+      "scoringType": {
+        "name": "touchdown",
+        "displayName": "Touchdown",
+        "abbreviation": "TD"
+      },
+      "type": {
+        "id": "68",
+        "text": "Rushing Touchdown",
+        "abbreviation": "TD"
+      },
+      "team": {
+        "id": "21"
+      }
+    }
+  ]
+}

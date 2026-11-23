@@ -19,6 +19,6 @@ test('missing period metadata does not discard a fully observable lead-change co
     delete plays[2].period;
     const extracted = W.extractPlayMetrics({ drives: [{ plays }] });
     assert.equal(extracted.leadChangesLowerBound, 5);
-    assert.equal(extracted.lateLeadChange, null);
+    assert.equal(extracted.q4TyingOrGoAhead, null);
 });
 

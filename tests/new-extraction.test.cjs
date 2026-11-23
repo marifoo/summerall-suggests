@@ -30,10 +30,10 @@ test('actual ESPN adapter orders and deduplicates previous/current collections',
  assert.equal(W.isPlayMetrics(original),true);
 });
 test('live scoreless observation at three minutes establishes trailing possession',()=>{
- const play={...p(10,17,4,'3:00'),scoringPlay:false,start:{down:1,team:{id:'h'}}};
+ const play={...p(10,17,4,'3:00'),scoringPlay:false,start:{down:1,team:{id:'h'}},end:{down:2,team:{id:'h'}}};
  const source={header:{competitions:[{competitors:[{id:'h',homeAway:'home'}]}]},drives:{previous:[{plays:[play]}]}};
  assert.equal(W.evaluate({...W.extractMetrics({competitions:[]},W.extractPlayMetrics(source)),completed:true}).rules.find(r=>r.id==='late-drama').points,1);
- play.start.down=0;
+ play.end.down=0;
  assert.equal(W.evaluate({...W.extractMetrics({competitions:[]},W.extractPlayMetrics(source)),completed:true}).rules.find(r=>r.id==='late-drama').points,0);
 });
 test('contradictory final context cannot award temporal bonuses',()=>{

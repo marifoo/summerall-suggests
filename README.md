@@ -165,12 +165,16 @@ Unavailable scores, records, linescores, and play history are `null`, rather tha
 fabricated zeros or false values. Rules lacking required data award zero points and
 explain why they are inapplicable. Scheduled/live/cancelled games cannot qualify.
 Normalization falls back to competition status when event status omits its type.
-This explicitly handles absent facts; scoring follows scoring-new.md. The ESPN adapter merges completed and current drive collections, deduplicates stable
-play IDs, and orders verified sequence numbers. Sanitized recorded ESPN plays in
-`tests/fixtures/espn-401671793.json` establish post-play score states, start-clock
-and live down/team possession metadata. Possession never follows merely from a
-drive's team or terminal end state. Small Pareto-frontier possession witnesses and
-score/clock interval evidence are persisted; raw plays and drives are not.
+This explicitly handles absent facts; scoring follows [scoring-new.md](scoring-new.md).
+The ESPN adapter merges drive collections and independently recorded scoring
+plays, deduplicates stable play IDs, and orders verified sequence numbers or
+period/clock observations. Sanitized recordings in `tests/fixtures` verify
+post-play scores, event clocks, scoring values and conversions, and overtime
+period evidence. Live possession uses post-play team/down evidence, excluding
+terminal markers; start ownership at a turnover's finish clock cannot establish
+continued possession. Explicitly described untimed downs are separate from an
+expired clock. The latest possession witness for each positive deficit and
+representative score/clock evidence are persisted; raw plays and drives are not.
 
 The verified source contract does not guarantee that omitted drives or plays can
 be detected. Exact lead-change totals and unsupported negative temporal facts

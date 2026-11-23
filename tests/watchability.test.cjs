@@ -31,21 +31,23 @@ test('unavailable scores, records, linescores and plays remain explicit nulls', 
     ] }] });
     const extracted = W.extractMetrics(game);
     for (const key of ['homeScore', 'awayScore', 'finalMargin', 'combinedScore', 'overtime',
-        'leadChanges', 'lateLeadChange', 'homeRecordDifferential', 'awayRecordDifferential']) assert.equal(extracted[key], null, key);
+        'leadChanges', 'q4TyingOrGoAhead', 'homeRecordDifferential', 'awayRecordDifferential']) assert.equal(extracted[key], null, key);
     const evaluation = W.evaluate(extracted);
     assert.equal(evaluation.points, 0);
     assert.ok(evaluation.rules.every(rule => !rule.applicable && rule.matched === null && rule.points === 0));
     assert.equal(facts([]).leadChanges, null);
-    assert.equal(facts([{ period: { number: 4 }, homeScore: 7 }]).lateLeadChange, null);
+    assert.equal(facts([{ period: { number: 4 }, homeScore: 7 }]).q4TyingOrGoAhead, null);
 });
 
-test('extraction stores threshold-independent comeback facts and final Q4 score evidence', () => {
+test('extraction stores threshold-independent comeback facts and Q4 drama evidence', () => {
     const result = facts([play(0, 16, 3), play(16, 16, 3), play(16, 25, 4), play(26, 25, 4)]);
     assert.equal(result.erasedDeficitSecondHalf, 16);
     assert.equal(result.erasedDeficitFourthQuarter, 9);
     assert.equal(result.comebackFacts.home.secondHalfDeficit, 16);
-    assert.deepEqual(result.lastQ4Score, { before: { home: 16, away: 25 }, after: { home: 26, away: 25 }, previousLeader: 'away', newLeader: 'home' });
-    assert.equal(result.lateLeadChange, true);
+    assert.equal(result.q4TyingOrGoAhead, true);
+    assert.deepEqual(result.dramaEvidence.before, { home: 16, away: 25 });
+    assert.deepEqual(result.dramaEvidence.after, { home: 26, away: 25 });
+    assert.equal(result.q4ScoreClockUpperBound, null);
     assert.equal(result.leadChangesLowerBound, 1);
     assert.deepEqual(W.extractPlayMetrics({ drives: { 0: { plays: [play(0, 16, 3), play(16, 16, 3), play(16, 25, 4), play(26, 25, 4)] } } }), result);
 });
