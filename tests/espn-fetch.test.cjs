@@ -696,3 +696,60 @@ test('clearing during discovery or a summary request prevents late persistent wr
         assert.equal(page.storage.size, 0, stage);
     }
 });
+
+test('developer mode is opt-in, warns about spoilers, inspects every game, and removes traces when disabled', async () => {
+    const fixtures = [game(), game('blowout', 'post', '40', '3'), game('scheduled', 'pre')];
+    const page = app(url => jsonResponse(url.includes('/summary?') ? summary() : scoreboard({ events: fixtures })));
+    page.run('setupDeveloperMode()');
+    await page.run('loadGames(11, 2, 2026)');
+    assert.equal(page.element('developer-content').innerHTML, '');
+    assert.equal(page.element('developer-section').classList.contains('hidden'), true);
+    assert.match(html, /Developer mode[^<]*reveals spoilers/i);
+    const before = page.calls.length;
+    const toggle = page.element('developer-toggle');
+    toggle.checked = true; toggle.handlers.change();
+    const inspection = page.element('developer-content').innerHTML;
+    assert.equal(page.element('developer-section').classList.contains('hidden'), false);
+    assert.equal((inspection.match(/data-game-id=/g) || []).length, 3);
+    assert.equal((inspection.match(/data-rule-id=/g) || []).length, 39);
+    assert.match(inspection, /37/);
+    assert.match(inspection, /40/);
+    assert.match(inspection, /finalMargin/);
+    assert.match(inspection, /Required data unavailable/);
+    assert.match(inspection, /Game not completed/);
+    assert.match(inspection, /Weekly maximum/);
+    assert.match(inspection, /3 stars/);
+    assert.match(inspection, /not-requested/);
+    assert.equal(page.calls.length, before);
+    toggle.checked = false; toggle.handlers.change();
+    assert.equal(page.element('developer-content').innerHTML, '');
+    assert.equal(page.element('developer-section').classList.contains('hidden'), true);
+    assert.doesNotMatch(page.element('watchable-games').innerHTML, /37|36|finalMargin|close|points/);
+});
+
+test('developer decisions are the exact persisted evaluations used by normal recommendations', async () => {
+    const page = app(url => jsonResponse(url.includes('/summary?') ? summary() : scoreboard()));
+    page.run('setupDeveloperMode()');
+    await page.run('loadGames(11, 2, 2026)');
+    const saved = JSON.parse(page.storage.get('summerall:decision_123')).data;
+    page.element('developer-toggle').checked = true;
+    page.element('developer-toggle').handlers.change();
+    assert.match(page.element('developer-content').innerHTML, new RegExp(`Total points: <strong>${saved.evaluation.points}</strong>`));
+    assert.equal(saved.evaluation.watchable, true);
+    for (const rule of saved.evaluation.rules) assert.ok(page.element('developer-content').innerHTML.includes(`data-rule-id="${rule.id}"`));
+    assert.match(page.element('watchable-games').innerHTML, /Home Team/);
+});
+
+test('developer mode resets stale results during navigation and shows scheduled-only weeks', async () => {
+    const page = app(() => jsonResponse(scoreboard({ events: [game('pending', 'pre')] })));
+    page.run('setupDeveloperMode()');
+    page.element('developer-toggle').checked = true;
+    page.element('developer-toggle').handlers.change();
+    await page.run('loadGames(11, 2, 2026)');
+    assert.match(page.element('developer-content').innerHTML, /Game not completed/);
+    assert.equal(page.element('developer-section').classList.contains('hidden'), false);
+    const reload = app(() => { throw new Error('cached'); }, { storage: page.storage });
+    reload.run('setupDeveloperMode()');
+    await reload.run('loadGames(11, 2, 2026)');
+    assert.equal(reload.element('developer-content').innerHTML, '');
+});

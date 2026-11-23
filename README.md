@@ -6,8 +6,10 @@ A spoiler-free NFL game recommendation website that helps you decide which games
 
 - **Spoiler-Free Recommendations**: Shows only team names and pre-game records for recommended games
 - **Smart Analysis**: Automatically identifies exciting games based on multiple criteria
-- **Star Ratings**: Top games receive a star indicator based on how many criteria they meet
+- **Star Ratings**: Recommended games receive stars according to points and weekly ranking
 - **Spoiler Zone**: Optional section to view full scores and quarter-by-quarter breakdowns
+- **Developer Mode**: Explicit opt-in inspection of all games, metrics, scoring traces, and ranking explanations (reveals spoilers)
+- **Clear Cache**: Remove app-owned persistent and memory caches
 - **Week Navigation**: Browse backwards and forwards through past weeks and seasons
 - **Background Loading**: After showing a week, loads the previous week's results, then the week before that, for faster navigation
 - **Automatic Week Detection**: Defaults to the most recent week with completed games
@@ -51,6 +53,25 @@ schedule order for ties. A low-scoring weekly leader is not recommended automati
   exists), both teams scoring 15+, or margin ≤ 15. Skipped blowouts receive no
   summary-dependent bonuses even if an unobserved comeback happened. Record
   differentials assume ESPN's total record includes the completed game.
+
+## Developer mode (spoilers)
+
+Check **Developer mode — reveals spoilers for all games** above the results. It is
+off on every page load and never persisted. It shows every game in the selected
+week, including scheduled/live games and skipped blowouts, with actual scores,
+extracted metrics (including comeback facts, missing values, and summary availability),
+every rule's inputs/threshold/weight/applicability/result/points, total points,
+recommendation cutoff and decision, weekly rank, ties, and star explanations.
+Non-completed games are ineligible and unranked. An unavailable fact displays as
+`null`; it is distinct from a known zero or false value.
+
+This view consumes the same evaluations used to render normal recommendations;
+it does not request extra data or apply a second scoring policy. It also reveals
+when the selective-summary policy left facts unavailable. Turning it off removes
+the inspection content from the DOM. Navigation clears old inspection results
+while loading; the checkbox stays enabled for the current page session.
+Normal recommendation cards continue to show only names, pre-game records, dates,
+and stars; scores and rule details remain behind the separate spoiler opt-ins.
 
 ## Technical Details
 
@@ -125,7 +146,9 @@ week-level ranking. `evaluate(metrics)` returns every rule's inputs, thresholds,
 weight, applicability, match result, awarded points (including zero and negative),
 total, and recommendation cutoff/decision. `rankWeek` adds rank and star explanations
 without mutating evaluations. All scoring thresholds and weights live together in
-that module. The page owns fetching, navigation, and rendering.
+that module. `compact-cache.js` owns versioning, expiry, bounds, eviction, and
+storage failures behind `getEntry` / `get` / `set` / `remove` / `clear`. The page
+owns request sharing, week loading, navigation, and rendering.
 
 Unavailable scores, records, linescores, and play history are `null`, rather than
 fabricated zeros or false values. Rules lacking required data award zero points and
@@ -156,6 +179,14 @@ Run the scoring, extraction, ranking, fetch, and rendering regression tests with
 ```sh
 node --test tests/*.test.cjs
 ```
+
+The suite covers scoring boundaries and cumulative bonuses, comeback/tie semantics,
+negative and zero points, missing data, star ties, compact serialization, independent
+version changes, expiry preservation, eviction/quota/blocked storage, request sharing,
+refresh/clear races, sequential prefetch, and opt-in developer rendering. Browser
+smoke verification can serve the static files, intercept the ESPN endpoints with
+fixtures, and check normal/developer modes, mobile overflow, clear-cache, and reload
+reset without relying on live game results.
 
 See [AGENTS.md](AGENTS.md) for design principles, red-green bug-fix testing, and atomic commit requirements.
 

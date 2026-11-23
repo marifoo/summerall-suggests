@@ -35,6 +35,10 @@
                 Refresh data
             </button>
             <button id="clear-cache-btn" class="mt-2 ml-3 text-sm text-gray-500 hover:text-gray-300 underline">Clear cache</button>
+            <label class="block mt-4 text-sm text-amber-300 cursor-pointer">
+                <input id="developer-toggle" type="checkbox" autocomplete="off" class="mr-2 accent-amber-400">
+                Developer mode — reveals spoilers for all games
+            </label>
             <span id="cache-status" role="status" class="block text-sm text-gray-400"></span>
         </header>
 
@@ -73,6 +77,11 @@
                         <!-- All other games will be inserted here -->
                     </div>
                 </div>
+            </section>
+            <section id="developer-section" class="hidden mt-8 border border-amber-600 rounded-lg p-4" aria-labelledby="developer-heading">
+                <h2 id="developer-heading" class="text-2xl font-semibold text-amber-300">⚠️ Developer mode — spoilers</h2>
+                <p class="text-gray-300 my-3">Scores, metrics, rule decisions and rankings for every game. Unavailable facts are shown as null.</p>
+                <div id="developer-content" class="grid gap-6"></div>
             </section>
         </main>
 
@@ -628,6 +637,64 @@
             `;
         }
 
+        function escapeHTML(value) {
+            return String(value).replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
+        }
+
+        // This view consumes the same evaluation objects as recommendations. It has
+        // no scoring or fetching decisions, and keeps no content in the DOM when off.
+        const developerMode = (() => {
+            let enabled = false;
+            let games = null;
+            const json = value => escapeHTML(JSON.stringify(value, null, 2));
+            function renderGame({ game, metrics, evaluation, ranking }) {
+                const home = game.competitions?.[0]?.competitors?.find(team => team.homeAway === 'home');
+                const away = game.competitions?.[0]?.competitors?.find(team => team.homeAway === 'away');
+                const rules = evaluation.rules.map(rule => `
+                    <tr data-rule-id="${escapeHTML(rule.id)}" class="border-t border-gray-700 align-top">
+                        <th scope="row" class="p-2 text-left">${escapeHTML(rule.id)}</th>
+                        <td class="p-2"><pre class="whitespace-pre-wrap">${json(rule.inputs)}</pre></td>
+                        <td class="p-2"><pre class="whitespace-pre-wrap">${json(rule.threshold)}</pre><p>Weight: ${rule.weight}</p></td>
+                        <td class="p-2">${rule.applicable ? 'Applicable' : 'Inapplicable'}; ${escapeHTML(rule.explanation)}</td>
+                        <td class="p-2">${rule.points > 0 ? '+' : ''}${rule.points}</td>
+                    </tr>`).join('');
+                return `<article data-game-id="${escapeHTML(game.id)}" class="bg-gray-800 rounded-lg p-4 min-w-0">
+                    <h3 class="font-semibold text-lg">${escapeHTML(getTeamName(away))} @ ${escapeHTML(getTeamName(home))}</h3>
+                    <p>Actual score: ${metrics.awayScore ?? 'Unavailable'} – ${metrics.homeScore ?? 'Unavailable'} · ${escapeHTML(game.status?.type?.shortDetail || game.status?.type?.state || 'Unknown status')}</p>
+                    <p>Total points: <strong>${evaluation.points}</strong> · Recommended: <strong>${evaluation.watchable ? 'Yes' : 'No'}</strong></p>
+                    <p>Recommendation threshold: ≥ ${evaluation.recommendation.threshold} points; eligible (completed): ${evaluation.recommendation.eligible ? 'Yes' : 'No'}.</p>
+                    <p>Rank: ${ranking.rank ?? 'Unranked'} · Weekly maximum: ${ranking.weeklyMaximum ?? 'Unavailable'} · Tied for first: ${ranking.tiedForFirst ? 'Yes' : 'No'} · Stars: ${ranking.stars}</p>
+                    <p>${escapeHTML(ranking.explanation)}</p>
+                    <details class="my-3" open><summary class="cursor-pointer text-amber-200">Extracted metrics and comeback facts</summary>
+                        <pre class="text-xs whitespace-pre-wrap break-words mt-2">${json(metrics)}</pre>
+                    </details>
+                    <div class="overflow-x-auto"><table class="w-full text-xs">
+                        <caption class="text-left text-gray-400 mb-2">Rule trace (rules v${evaluation.rulesVersion}, extraction v${Watchability.EXTRACTION_VERSION})</caption>
+                        <thead><tr><th scope="col" class="p-2 text-left">Rule</th><th scope="col" class="p-2 text-left">Inputs</th><th scope="col" class="p-2 text-left">Threshold / weight</th><th scope="col" class="p-2 text-left">Applicability / result</th><th scope="col" class="p-2 text-left">Points</th></tr></thead>
+                        <tbody>${rules}</tbody>
+                    </table></div>
+                </article>`;
+            }
+            function render() {
+                const section = document.getElementById('developer-section');
+                const content = document.getElementById('developer-content');
+                content.innerHTML = enabled && games ? games.map(renderGame).join('') || '<p>No games in this week.</p>' : '';
+                if (enabled && games) section.classList.remove('hidden');
+                else section.classList.add('hidden');
+            }
+            return {
+                setGames(analyses) { games = Watchability.rankWeek(analyses); render(); },
+                clear() { games = null; render(); },
+                setup() {
+                    const toggle = document.getElementById('developer-toggle');
+                    toggle.checked = false; // Browser form restoration must never opt in.
+                    toggle.addEventListener('change', () => { enabled = toggle.checked; render(); });
+                    render();
+                }
+            };
+        })();
+        function setupDeveloperMode() { developerMode.setup(); }
+
         // ============================================
         // MAIN APPLICATION
         // ============================================
@@ -636,6 +703,7 @@
             const generation = ++visibleLoadGeneration;
             const cacheEpoch = fetchCachedESPN.epoch;
             weekResults.cancelPrefetch();
+            developerMode.clear();
             const watchableContainer = document.getElementById('watchable-games');
             const spoilerContainer = document.getElementById('spoiler-games');
             const weekDisplay = document.getElementById('week-display');
@@ -705,6 +773,8 @@
                 }
 
                 weekDisplay.textContent = weekLabel;
+
+                developerMode.setGames(analyses);
 
                 // Filter to completed games
                 const completedGames = scoreboard.events.filter(isCompletedGame);
@@ -842,6 +912,7 @@
             setupSpoilerToggle();
             setupRefreshButton();
             setupClearCacheButton();
+            setupDeveloperMode();
             setupNavigationButtons();
             loadGames();
         });
