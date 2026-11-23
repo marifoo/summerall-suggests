@@ -165,7 +165,8 @@ Normalization falls back to competition status when event status omits its type.
 This explicitly handles absent facts; valid-data scoring follows the characterized
 implementation. Missing or incomplete score history cannot establish negative play facts. Missing
 periods disable period-dependent metrics while preserving lead counts established
-by a complete score sequence.
+by a complete score sequence. Play facts are projected onto their own fields;
+completion, actual scores, and pre-game records always come from the scoreboard.
 
 ## Deployment
 

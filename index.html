@@ -236,7 +236,15 @@
             overtime: Array.isArray(home?.linescores) && home.linescores.length ? home.linescores.length > 4 : null,
             homeRecordDifferential: homeRecord.differential, awayRecordDifferential: awayRecord.differential,
             homeRecord: homeRecord.display, awayRecord: awayRecord.display,
-            ...playMetrics, summaryAvailability };
+            // Play history owns only these facts. Extra cached fields cannot
+            // replace scoreboard-owned completion, scores, or pre-game records.
+            leadChanges: playMetrics?.leadChanges ?? null,
+            lateLeadChange: playMetrics?.lateLeadChange ?? null,
+            lastQ4Score: playMetrics?.lastQ4Score ?? null,
+            erasedDeficitSecondHalf: playMetrics?.erasedDeficitSecondHalf ?? null,
+            erasedDeficitFourthQuarter: playMetrics?.erasedDeficitFourthQuarter ?? null,
+            comebackFacts: playMetrics?.comebackFacts ?? null,
+            unavailable: playMetrics?.unavailable ?? null, summaryAvailability };
     }
 
     // Each rule owns its named inputs, numerical thresholds, and weight. Adding or
