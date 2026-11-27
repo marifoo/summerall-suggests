@@ -1,6 +1,6 @@
 # Repository guidance
 
-Read [README.md](README.md) for the product behavior, architecture, data sources,
+Read [docs/README.md](docs/README.md) for the product behavior, architecture, data sources,
 caching rules, deployment, and verification command. Keep it current when behavior
 or workflows change.
 
@@ -32,7 +32,7 @@ or workflows change.
 - Every bug fix must follow red-green testing: first add a regression test that
   reproduces the bug and run it to confirm it fails for the expected reason; only
   then implement the fix and run the tests to confirm they pass.
-- Run the relevant checks described in README.md before committing.
+- Run the relevant checks described in docs/README.md before committing.
 - Make atomic commits: each commit should contain one coherent, independently
   reviewable change, including its related tests and documentation. Keep unrelated
   edits separate and use commit messages that describe the change.

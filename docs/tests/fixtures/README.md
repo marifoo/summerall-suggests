@@ -1,5 +1,8 @@
 # ESPN adapter evidence
 
+The JSON fixtures described here live in [`tests/fixtures/`](../../../tests/fixtures/)
+at the repository root.
+
 `espn-401671793.json` is an allowlisted recording of the ESPN summary for
 Kansas City at Atlanta, September 22, 2024, obtained from the URL in its `source`
 field. It retains the complete observed drive/play chronology, stable IDs,
