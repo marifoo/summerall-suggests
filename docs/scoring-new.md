@@ -22,6 +22,8 @@ each category, award only the highest applicable value.
 | Team quality | Both teams entered with at least two more wins than losses each | +1 |
 | Playoff significance | Both teams entered with at least seven more wins than losses each | +1 |
 
+The maximum total is 14 points. There is no losing-record penalty.
+
 ## Definitions and counting rules
 
 - **Margin:** The absolute difference between the teams' scores. End-of-Q3
